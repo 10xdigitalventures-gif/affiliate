@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+/* Compact base: small body text + tight line-height */
+body {
+  @apply bg-gray-50 text-ink font-sans antialiased text-base;
+}
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Visible focus states for keyboard nav */
+:focus-visible {
+  @apply outline-none ring-2 ring-brand ring-offset-1;
+}
+
+input,
+button,
+select {
+  font-size: inherit;
+}

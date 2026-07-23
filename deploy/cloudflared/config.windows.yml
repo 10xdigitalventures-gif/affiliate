@@ -1,0 +1,28 @@
+# Windows locally-managed Cloudflare Tunnel example.
+# Replace both <TUNNEL-UUID> placeholders before using this file.
+# For a Windows service, config.yml and the credentials JSON normally live in
+# C:\Windows\System32\config\systemprofile\.cloudflared\
+
+tunnel: <TUNNEL-UUID>
+credentials-file: 'C:\Windows\System32\config\systemprofile\.cloudflared\<TUNNEL-UUID>.json'
+
+ingress:
+  # Existing JIL project (preserved on its original ports).
+  - hostname: app.mentoringhub.online
+    service: http://localhost:3000
+  - hostname: api.mentoringhub.online
+    service: http://localhost:4000
+  - hostname: marketplace.mentoringhub.online
+    service: http://localhost:3001
+
+  # Affiliate API must come before its general app hostname rule.
+  - hostname: affiliate.mentoringhub.online
+    path: ^/v1(/.*)?$
+    service: http://localhost:4100
+  - hostname: affiliate.mentoringhub.online
+    service: http://localhost:3100
+  - hostname: web.mentoringhub.online
+    service: http://localhost:3002
+  - service: http_status:404
+
+logfile: 'C:\Cloudflared\cloudflared.log'

@@ -1,0 +1,34 @@
+# Cloudflare Tunnel config for the MentoringHub affiliate platform.
+# This locally-managed example routes directly to the three PM2 processes.
+# Put the API path rule before the general app rule because ingress rules are
+# evaluated from top to bottom.
+#
+# Setup:
+#   cloudflared tunnel login
+#   cloudflared tunnel create mentoringhub
+#   sudo mkdir -p /etc/cloudflared && sudo cp /root/.cloudflared/<UUID>.json /etc/cloudflared/
+#   cloudflared tunnel route dns mentoringhub affiliate.mentoringhub.online
+#   cloudflared tunnel route dns mentoringhub web.mentoringhub.online
+#   sudo cp deploy/cloudflared/config.yml /etc/cloudflared/config.yml
+#   sudo cloudflared service install && sudo systemctl restart cloudflared
+#
+# Edit: set credentials-file to the real <UUID>.json path; use your real domains.
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /etc/cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: app.mentoringhub.online
+    service: http://localhost:3000
+  - hostname: api.mentoringhub.online
+    service: http://localhost:4000
+  - hostname: marketplace.mentoringhub.online
+    service: http://localhost:3001
+  - hostname: affiliate.mentoringhub.online
+    path: ^/v1(/.*)?$
+    service: http://localhost:4100
+  - hostname: affiliate.mentoringhub.online
+    service: http://localhost:3100
+  - hostname: web.mentoringhub.online
+    service: http://localhost:3002
+  - service: http_status:404

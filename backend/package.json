@@ -1,0 +1,65 @@
+{
+  "name": "affiliate-platform-backend",
+  "version": "0.7.2",
+  "description": "Unified Affiliate Management Platform - API",
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main.js",
+    "admin:ensure": "ts-node scripts/ensure-admin.ts",
+    "db:prepare": "ts-node scripts/prepare-database.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "lint": "npm run typecheck",
+    "typecheck": "tsc --noEmit --incremental false",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@nestjs/common": "11.1.28",
+    "@nestjs/config": "4.0.4",
+    "@nestjs/core": "11.1.28",
+    "@nestjs/jwt": "11.0.2",
+    "@nestjs/passport": "11.0.5",
+    "@nestjs/platform-express": "11.1.28",
+    "@nestjs/swagger": "11.4.6",
+    "@nestjs/throttler": "6.5.0",
+    "@prisma/client": "6.19.3",
+    "@sentry/node": "^7.120.0",
+    "argon2": "0.44.0",
+    "bullmq": "5.80.8",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "dotenv": "17.4.2",
+    "helmet": "8.3.0",
+    "nodemailer": "9.0.3",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "stripe": "^14.21.0"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "11.0.24",
+    "@nestjs/testing": "11.1.28",
+    "@types/jest": "30.0.0",
+    "@types/node": "22.20.1",
+    "@types/nodemailer": "8.0.1",
+    "@types/passport-jwt": "^4.0.0",
+    "@types/supertest": "7.2.1",
+    "jest": "30.4.2",
+    "prisma": "6.19.3",
+    "supertest": "7.2.2",
+    "ts-jest": "29.4.11",
+    "ts-node": "^10.9.2",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "glob": "13.0.6",
+    "test-exclude": "8.0.0"
+  }
+}

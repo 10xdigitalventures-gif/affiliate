@@ -1,0 +1,39 @@
+# Backwards-compatible alias for the secure local infrastructure compose.
+# Use: docker compose --env-file .env.docker -f docker-compose.dev.yml up -d
+name: mentoringhub-affiliate-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: affiliate_platform
+      POSTGRES_USER: affiliate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.docker}
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [affiliate_postgres_dev:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U affiliate -d affiliate_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.docker}
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: [affiliate_redis_dev:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  affiliate_postgres_dev:
+  affiliate_redis_dev:

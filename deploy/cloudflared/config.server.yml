@@ -1,0 +1,14 @@
+# Dedicated Linux-server tunnel for Affiliate Platform only.
+# Keep the existing Windows/JIL tunnel and its app/api/marketplace routes intact.
+tunnel: <NEW-AFFILIATE-SERVER-TUNNEL-UUID>
+credentials-file: /etc/cloudflared/<NEW-AFFILIATE-SERVER-TUNNEL-UUID>.json
+
+ingress:
+  - hostname: affiliate.mentoringhub.online
+    path: ^/v1(/.*)?$
+    service: http://127.0.0.1:4100
+  - hostname: affiliate.mentoringhub.online
+    service: http://127.0.0.1:3100
+  - hostname: web.mentoringhub.online
+    service: http://127.0.0.1:3002
+  - service: http_status:404
