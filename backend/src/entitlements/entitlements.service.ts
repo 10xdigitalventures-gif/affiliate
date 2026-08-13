@@ -29,15 +29,7 @@ export class EntitlementsService {
 
     const base = { features: { ...FREE_FALLBACK.features }, limits: { ...FREE_FALLBACK.limits } }
 
-    const now = Date.now()
-    const graceDays = Math.min(Math.max(Number(process.env.BILLING_GRACE_DAYS) || 3, 0), 30)
-    const subscriptionIsUsable = !!sub && (
-      (sub.status === 'active' && (!sub.currentPeriodEnd || sub.currentPeriodEnd.getTime() > now)) ||
-      (sub.status === 'trialing' && !!(sub.trialEndsAt ?? sub.currentPeriodEnd) && (sub.trialEndsAt ?? sub.currentPeriodEnd)!.getTime() > now) ||
-      (sub.status === 'past_due' && (sub.pastDueSince ?? sub.updatedAt).getTime() + graceDays * 86_400_000 > now)
-    )
-
-    if (!sub || !sub.plan || !subscriptionIsUsable) {
+    if (!sub || !sub.plan || sub.status === 'canceled') {
       return {
         planKey: sub?.plan?.key ?? null,
         planName: sub?.plan?.name ?? null,
@@ -83,7 +75,7 @@ export class EntitlementsService {
   async getLimit(organizationId: string, limit: LimitKey): Promise<number> {
     const ctx = await this.getContext(organizationId)
     const v = ctx.limits[limit]
-    return typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : 0
+    return typeof v === 'number' ? v : 0
   }
 
   /** Throws when creating `additional` more of `limit` would exceed the plan cap. */
@@ -105,36 +97,19 @@ export class EntitlementsService {
       case 'stores':
         return this.prisma.store.count({ where: { organizationId } })
       case 'teamMembers':
-        return this.prisma.user.count({
-          where: {
-            organizationId,
-            status: { in: ['active', 'invited'] },
-            OR: [{ affiliate: null }, { roles: { some: {} } }],
-          },
-        })
+        return this.prisma.user.count({ where: { organizationId } })
       case 'apiKeys':
         return this.prisma.apiKey.count({ where: { organizationId } })
-      // These are per-affiliate limits and require an affiliate identity. They
-      // are enforced by the portal services rather than this org-wide helper.
-      case 'trackingLinksPerAffiliate':
-      case 'monthlyPayoutRequestsPerAffiliate':
-        return 0
       default:
         return 0
     }
   }
 
-  async usage(organizationId: string): Promise<Record<string, number>> {
+  async usage(organizationId: string): Promise<Record<LimitKey, number>> {
     const [affiliates, stores, teamMembers, apiKeys] = await Promise.all([
       this.prisma.affiliate.count({ where: { organizationId } }),
       this.prisma.store.count({ where: { organizationId } }),
-      this.prisma.user.count({
-        where: {
-          organizationId,
-          status: { in: ['active', 'invited'] },
-          OR: [{ affiliate: null }, { roles: { some: {} } }],
-        },
-      }),
+      this.prisma.user.count({ where: { organizationId } }),
       this.prisma.apiKey.count({ where: { organizationId } }),
     ])
     return { affiliates, stores, teamMembers, apiKeys }

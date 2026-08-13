@@ -11,11 +11,9 @@ import { CommissionChannelSettingsDto } from './dto/commission-channel-settings.
 import { CustomerTypeSettingsDto } from './dto/customer-type-settings.dto'
 import { SsoSettingsDto } from './dto/sso-settings.dto'
 import { JwtPayload } from '../auth/jwt.strategy'
-import { FeatureGuard } from '../entitlements/feature.guard'
-import { RequireFeature } from '../entitlements/require-feature.decorator'
 
 @Controller('settings')
-@UseGuards(JwtAuthGuard, PermissionsGuard, FeatureGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class SettingsController {
   constructor(private readonly settings: SettingsService) {}
 
@@ -32,14 +30,12 @@ export class SettingsController {
   }
 
   @Get('sub-affiliate')
-  @RequireFeature('multiTierCommissions')
   @RequirePermissions('settings.write')
   getSubAffiliate(@Req() req: { user: JwtPayload }) {
     return this.settings.getSubAffiliateSettings(req.user.organizationId)
   }
 
   @Patch('sub-affiliate')
-  @RequireFeature('multiTierCommissions')
   @RequirePermissions('settings.write')
   updateSubAffiliate(@Req() req: { user: JwtPayload }, @Body() dto: SubAffiliateSettingsDto) {
     return this.settings.updateSubAffiliateSettings(req.user.organizationId, dto)
@@ -94,14 +90,12 @@ export class SettingsController {
   }
 
   @Get('sso')
-  @RequireFeature('enterpriseSso')
   @RequirePermissions('settings.write')
   getSso(@Req() req: { user: JwtPayload }) {
     return this.settings.getSsoSettings(req.user.organizationId)
   }
 
   @Patch('sso')
-  @RequireFeature('enterpriseSso')
   @RequirePermissions('settings.write')
   updateSso(@Req() req: { user: JwtPayload }, @Body() dto: SsoSettingsDto) {
     return this.settings.updateSsoSettings(req.user.organizationId, dto)

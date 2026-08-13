@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { ShopifyApp } from '@/lib/api'
+import { setTokens, ShopifyApp } from '@/lib/api'
 
 declare global {
   interface Window {
@@ -19,9 +19,8 @@ const API_KEY = process.env.NEXT_PUBLIC_SHOPIFY_API_KEY || ''
 type Status = 'loading' | 'ready' | 'error' | 'standalone'
 
 // Embedded (in-Shopify-admin) shell. Loads App Bridge from Shopify CDN (no npm
-// dependency), exchanges the Shopify session token for an HttpOnly partitioned
-// platform session, then renders the SAME dashboard pages inside the Shopify
-// admin iframe. The
+// dependency), exchanges the Shopify session token for a platform JWT, then
+// renders the SAME dashboard pages inside the Shopify admin iframe. The
 // standalone dashboard at /dashboard keeps working unchanged (hybrid).
 export default function EmbeddedLayout({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status>('loading')
@@ -56,6 +55,7 @@ export default function EmbeddedLayout({ children }: { children: ReactNode }) {
       try {
         const sessionToken = await window.shopify.idToken()
         const res = await ShopifyApp.tokenExchange(sessionToken)
+        setTokens(res.access_token, res.refresh_token)
         window.localStorage.setItem('user', JSON.stringify(res.user))
         if (!cancelled) setStatus('ready')
       } catch (err) {

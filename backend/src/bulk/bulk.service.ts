@@ -1,8 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { buildCsv, parseCsv } from './csv.util'
-import { EntitlementsService } from '../entitlements/entitlements.service'
-import { AFFILIATE_CODE_PATTERN, REFERRAL_SLUG_PATTERN } from '../affiliates/dto/create-affiliate.dto'
 
 export type ExportEntity = 'affiliates' | 'commissions' | 'orders' | 'payouts'
 
@@ -17,10 +15,7 @@ const AFFILIATE_TEMPLATE_HEADER = ['affiliateCode', 'referralSlug', 'status', 'p
 
 @Injectable()
 export class BulkService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly entitlements: EntitlementsService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   affiliateTemplate(): string {
     return buildCsv(AFFILIATE_TEMPLATE_HEADER, [
@@ -104,49 +99,17 @@ export class BulkService {
     const validStatuses = new Set(['pending', 'approved', 'suspended', 'rejected'])
 
     // Preload existing codes to detect duplicates cheaply.
-    const existing = await this.prisma.affiliate.findMany({
-      where: { organizationId },
-      select: { affiliateCode: true, referralSlug: true },
-    })
-    const seenCodes = new Set(existing.map((e) => e.affiliateCode.toUpperCase()))
-    const seenSlugs = new Set(existing.map((e) => e.referralSlug.toLowerCase()))
+    const existing = await this.prisma.affiliate.findMany({ where: { organizationId }, select: { affiliateCode: true } })
+    const seenCodes = new Set(existing.map((e) => e.affiliateCode))
 
-    // Reserve plan capacity once before mutating data. Invalid/duplicate rows
-    // are excluded, so bulk imports cannot bypass the ordinary affiliate cap.
-    const capacityCodes = new Set<string>()
-    const capacitySlugs = new Set<string>()
-    for (const record of records) {
-      const code = (record.affiliateCode || '').trim().toUpperCase()
-      const status = (record.status || 'pending').trim().toLowerCase()
-      const slug = (record.referralSlug || code).trim().toLowerCase()
-      if (
-        AFFILIATE_CODE_PATTERN.test(code) &&
-        REFERRAL_SLUG_PATTERN.test(slug) &&
-        validStatuses.has(status) &&
-        !seenCodes.has(code) &&
-        !seenSlugs.has(slug) &&
-        !capacityCodes.has(code) &&
-        !capacitySlugs.has(slug)
-      ) {
-        capacityCodes.add(code)
-        capacitySlugs.add(slug)
-      }
-    }
-    if (capacityCodes.size > 0) {
-      await this.entitlements.assertWithinLimit(organizationId, 'affiliates', capacityCodes.size)
-    }
-
-    const parentLinks: Array<{ code: string; parentCode: string; row: number }> = []
+    const parentLinks: Array<{ code: string; parentCode: string }> = []
 
     for (let i = 0; i < records.length; i++) {
       const rowNum = i + 2 // header is row 1
       const rec = records[i]
-      const code = (rec.affiliateCode || '').trim().toUpperCase()
+      const code = (rec.affiliateCode || '').trim()
       try {
         if (!code) { result.errors.push({ row: rowNum, message: 'Missing affiliateCode' }); continue }
-        if (!AFFILIATE_CODE_PATTERN.test(code)) {
-          result.errors.push({ row: rowNum, message: 'Invalid affiliateCode format (2-64 letters, numbers, underscores or hyphens)' }); continue
-        }
         if (seenCodes.has(code)) { result.skipped++; continue }
 
         const status = (rec.status || 'pending').trim().toLowerCase()
@@ -154,56 +117,30 @@ export class BulkService {
           result.errors.push({ row: rowNum, message: `Invalid status "${status}"` }); continue
         }
         const slug = (rec.referralSlug || code).trim().toLowerCase()
-        if (!REFERRAL_SLUG_PATTERN.test(slug)) {
-          result.errors.push({ row: rowNum, message: 'Invalid referralSlug format (1-64 lowercase letters, numbers or hyphens)' }); continue
-        }
-        if (seenSlugs.has(slug)) {
-          result.errors.push({ row: rowNum, message: `Referral slug "${slug}" is already in use` }); continue
-        }
 
         await this.prisma.affiliate.create({
           data: { organizationId, affiliateCode: code, referralSlug: slug, status: status as any },
         })
         seenCodes.add(code)
-        seenSlugs.add(slug)
         result.created++
 
-        const parentCode = (rec.parentAffiliateCode || '').trim().toUpperCase()
-        if (parentCode) parentLinks.push({ code, parentCode, row: rowNum })
+        const parentCode = (rec.parentAffiliateCode || '').trim()
+        if (parentCode) parentLinks.push({ code, parentCode })
       } catch (e: any) {
         result.errors.push({ row: rowNum, message: e?.message ? String(e.message).slice(0, 200) : 'Create failed' })
       }
     }
 
-    // Resolve parent linkage in memory and reject every direct or indirect
-    // cycle, including cycles that pass through pre-existing affiliates.
-    const affiliates = await this.prisma.affiliate.findMany({
-      where: { organizationId },
-      select: { id: true, affiliateCode: true, parentAffiliateId: true },
-    })
-    const byCode = new Map(affiliates.map((affiliate) => [affiliate.affiliateCode.toUpperCase(), affiliate]))
-    const parentById = new Map(affiliates.map((affiliate) => [affiliate.id, affiliate.parentAffiliateId]))
+    // Resolve parent linkage (skip self / missing / would-be cycles are prevented by depth-1 direct set).
     for (const link of parentLinks) {
-      const child = byCode.get(link.code)
-      const parent = byCode.get(link.parentCode)
-      if (!child || !parent) {
-        result.errors.push({ row: link.row, message: `Parent affiliate "${link.parentCode}" was not found` })
-        continue
+      if (link.parentCode === link.code) continue
+      const [child, parent] = await Promise.all([
+        this.prisma.affiliate.findFirst({ where: { organizationId, affiliateCode: link.code }, select: { id: true } }),
+        this.prisma.affiliate.findFirst({ where: { organizationId, affiliateCode: link.parentCode }, select: { id: true } }),
+      ])
+      if (child && parent && child.id !== parent.id) {
+        await this.prisma.affiliate.update({ where: { id: child.id }, data: { parentAffiliateId: parent.id } }).catch(() => {})
       }
-      let cursor: string | null = parent.id
-      const visited = new Set<string>()
-      let cycle = false
-      while (cursor) {
-        if (cursor === child.id || visited.has(cursor)) { cycle = true; break }
-        visited.add(cursor)
-        cursor = parentById.get(cursor) ?? null
-      }
-      if (cycle) {
-        result.errors.push({ row: link.row, message: 'Parent relationship would create an affiliate cycle' })
-        continue
-      }
-      await this.prisma.affiliate.update({ where: { id: child.id }, data: { parentAffiliateId: parent.id } })
-      parentById.set(child.id, parent.id)
     }
 
     return result

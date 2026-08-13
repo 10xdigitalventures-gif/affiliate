@@ -33,32 +33,21 @@ export class WhopGateway implements PaymentGateway {
   private readonly baseUrl: string
 
   constructor(private readonly creds: GatewayCredentials) {
-    const officialBase = creds.isLive
-      ? 'https://api.whop.com/api/v1'
-      : 'https://sandbox-api.whop.com/api/v1'
-    this.baseUrl = (creds.baseUrl || officialBase).replace(/\/+$/, '')
+    this.baseUrl = (creds.baseUrl || 'https://api.whop.com/api/v1').replace(/\/+$/, '')
   }
 
   // ── HTTP helper ────────────────────────────────────────────────────────────
-  private async req<T = any>(method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
+  private async req<T = any>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.creds.apiKey) throw new GatewayError('Whop API key not configured', 'whop')
-    let res: Response
-    try {
-      res = await fetch(`${this.baseUrl}${path}`, {
-        method,
-        redirect: 'error',
-        signal: AbortSignal.timeout(gatewayTimeoutMs()),
-        headers: {
-          Authorization: `Bearer ${this.creds.apiKey}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      })
-    } catch {
-      throw new GatewayError(`Whop ${method} ${path} timed out or could not be reached`, 'whop', 503)
-    }
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${this.creds.apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
     const text = await res.text()
     const json = text ? safeJson(text) : {}
     if (!res.ok) {
@@ -125,20 +114,16 @@ export class WhopGateway implements PaymentGateway {
       company_id: this.creds.companyId,
       member_id: input.memberOrCustomerId ?? undefined,
       payment_method_id: input.paymentMethodId ?? undefined,
+      currency: input.currency.toLowerCase(),
       collection_method: input.autoCharge ? 'charge_automatically' : 'send_invoice',
-      due_date: input.dueAt?.toISOString(),
-      plan: {
-        initial_price: round2(input.totalCents / 100),
-        currency: input.currency.toLowerCase(),
-        plan_type: 'one_time',
-      },
-      product: { title: input.description ?? 'Platform subscription' },
+      due_at: input.dueAt ? Math.floor(input.dueAt.getTime() / 1000) : undefined,
+      metadata: input.metadata ?? undefined,
       line_items: input.lineItems.map((li) => ({
-        label: li.description,
-        unit_price: round2(li.amountCents / 100),
+        description: li.description,
+        amount: round2(li.amountCents / 100),
         quantity: li.quantity ?? 1,
       })),
-    }, input.idempotencyKey)
+    })
     return {
       id: inv.id,
       number: inv.number ?? null,
@@ -161,14 +146,7 @@ export class WhopGateway implements PaymentGateway {
     const sigHeader = header(req.headers, 'webhook-signature')
     if (!id || !ts || !sigHeader) throw new GatewayError('Missing Whop webhook signature headers', 'whop', 400)
 
-    const timestampSeconds = Number(ts)
-    const tolerance = Math.min(Math.max(Number(process.env.WHOP_WEBHOOK_TOLERANCE_SECONDS) || 300, 60), 900)
-    if (!Number.isSafeInteger(timestampSeconds) || Math.abs(Date.now() / 1000 - timestampSeconds) > tolerance) {
-      throw new GatewayError('Whop webhook timestamp is outside the allowed replay window', 'whop', 401)
-    }
-
     const secretBytes = Buffer.from(secret.replace(/^whsec_/, ''), 'base64')
-    if (secretBytes.length < 16) throw new GatewayError('Whop webhook secret is invalid', 'whop', 500)
     const signedContent = `${id}.${ts}.${req.rawBody}`
     const expected = createHmac('sha256', secretBytes).update(signedContent).digest('base64')
 
@@ -176,10 +154,7 @@ export class WhopGateway implements PaymentGateway {
     const ok = provided.some((p) => safeEqual(p, expected))
     if (!ok) throw new GatewayError('Whop webhook signature mismatch', 'whop', 401)
 
-    const evt = strictJson(req.rawBody, 'whop')
-    if (this.creds.companyId && evt.company_id && evt.company_id !== this.creds.companyId) {
-      throw new GatewayError('Whop webhook company does not match this gateway', 'whop', 401)
-    }
+    const evt = safeJson(req.rawBody)
     return { id, type: evt.type ?? 'unknown', data: evt.data ?? evt, provider: 'whop', raw: evt }
   }
 
@@ -189,17 +164,13 @@ export class WhopGateway implements PaymentGateway {
 
   // Whop payouts move money out of your ledger to a payout method / connected user.
   async createPayout(input: PayoutInput): Promise<PayoutResult> {
-    const destinationId = String(input.destination.destinationId ?? input.destination.id ?? '').trim()
-    if (!destinationId) throw new GatewayError('Whop destinationId is required for a transfer', 'whop', 400)
-    if (!this.creds.companyId) throw new GatewayError('Whop company id not configured', 'whop', 400)
     const tr = await this.req<any>('POST', '/transfers', {
+      company_id: this.creds.companyId,
       amount: round2(input.amountCents / 100),
       currency: input.currency.toLowerCase(),
-      origin_id: this.creds.companyId,
-      destination_id: destinationId,
+      destination: input.destination,
       idempotence_key: input.reference ?? undefined,
-      notes: input.purpose?.slice(0, 50) ?? undefined,
-      metadata: input.reference ? { reference: input.reference } : undefined,
+      reason: input.purpose ?? undefined,
     })
     return { id: tr.id, status: tr.status ?? 'processing', provider: 'whop', raw: tr }
   }
@@ -215,18 +186,6 @@ function safeJson(text: string): any {
   } catch {
     return {}
   }
-}
-function strictJson(text: string, provider: 'whop'): any {
-  try {
-    const parsed = JSON.parse(text)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid')
-    return parsed
-  } catch {
-    throw new GatewayError('Whop webhook body is not valid JSON', provider, 400)
-  }
-}
-function gatewayTimeoutMs(): number {
-  return Math.min(Math.max(Number(process.env.GATEWAY_HTTP_TIMEOUT_MS) || 15_000, 1_000), 30_000)
 }
 function header(h: WebhookRequest['headers'], name: string): string | undefined {
   const v = h[name] ?? h[name.toLowerCase()]

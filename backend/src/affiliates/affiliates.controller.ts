@@ -4,7 +4,6 @@ import { PermissionsGuard } from '../common/guards/permissions.guard'
 import { RequirePermissions } from '../common/guards/permissions.decorator'
 import { AffiliatesService } from './affiliates.service'
 import { CreateAffiliateDto } from './dto/create-affiliate.dto'
-import { SetAffiliateParentDto } from './dto/set-affiliate-parent.dto'
 import { JwtPayload } from '../auth/jwt.strategy'
 
 @Controller('affiliates')
@@ -46,7 +45,7 @@ export class AffiliatesController {
   setParent(
     @Req() req: { user: JwtPayload },
     @Param('id') id: string,
-    @Body() body: SetAffiliateParentDto,
+    @Body() body: { parentAffiliateId: string | null },
   ) {
     return this.affiliates.setParent(req.user.organizationId, id, body.parentAffiliateId ?? null)
   }

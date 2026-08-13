@@ -96,36 +96,6 @@
       credentials: 'include',
       body: JSON.stringify(body),
       keepalive: true
-    }).then(function (response) {
-      if (!response.ok) throw new Error('click rejected')
-      return response.json()
-    }).then(function (result) {
-      // Persist the returned id as a first-party store cookie. This is more
-      // reliable than relying on a third-party/custom-subdomain Set-Cookie.
-      if (!result || !result.clickId) return
-      setCookie('aff_click', result.clickId)
-      if (window.Shopify) {
-        fetch('/cart/update.js', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ attributes: { aff_click: result.clickId } })
-        }).catch(function () { })
-      }
-    }).catch(function () {
-      // Storefront origins are intentionally not placed in the dashboard API
-      // CORS allowlist. A no-CORS image beacon still records the click; the
-      // first-party referral/UTM cookies above remain the attribution source.
-      var p = new URLSearchParams()
-      p.set('ref', ref)
-      if (org) p.set('org', org)
-      p.set('u', window.location.href.slice(0, 1000))
-      for (var name in utm) if (utm[name]) p.set(name, utm[name])
-      for (var n = 0; n < AD_IDS.length; n++) {
-        var idValue = qs.get(AD_IDS[n])
-        if (idValue) p.set(AD_IDS[n], idValue)
-      }
-      var beacon = new Image(1, 1)
-      beacon.src = api + '/track/pixel.gif?' + p.toString()
-    })
+    }).catch(function () { })
   } catch (e) { }
 })()

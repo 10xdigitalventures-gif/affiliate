@@ -1,18 +1,5 @@
 # Migration reset (baseline) + Supabase RLS — step by step
 
-> **Legacy incident reference only.** v6 has a committed immutable migration
-> history and automated database preflight. Do not run these manual commands
-> unless `prisma migrate status` proves this exact old baseline condition and a
-> current database backup exists.
-
-Migration folders use a permanent sequence:
-
-- `0_init` — baseline of the complete schema
-- `1_enable_rls_supabase` — RLS/security hardening
-- future changes — `2_description`, `3_description`, and so on
-
-Never rename or edit a migration after it has been recorded in the database.
-
 Do the steps in order. All commands run from `E:\Programs\Affiliate-Platform\backend`.
 
 ---
@@ -48,7 +35,7 @@ npx prisma migrate status
 
 ## Part 2 — Add the RLS migration (Supabase hardening)
 
-Copy the folder `prisma/migrations/1_enable_rls_supabase` from this
+Copy the folder `prisma/migrations/20260714150000_enable_rls_supabase` from this
 zip into your project's `prisma/migrations/`. Then apply it:
 
 ```powershell
@@ -81,7 +68,7 @@ await prisma.$transaction(async (tx) => {
 ```
 
 To apply it as a migration, drop its contents into a new migration folder
-(e.g. `2_tenant_rls/migration.sql`) and run `npx prisma migrate deploy`.
+(e.g. `20260714160000_tenant_rls/migration.sql`) and run `npx prisma migrate deploy`.
 
 ---
 

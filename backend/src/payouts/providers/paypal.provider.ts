@@ -26,11 +26,7 @@ export class PayPalPayoutProvider implements PayoutProvider {
   }
 
   private base(): string {
-    const base = (process.env.PAYPAL_API_BASE || 'https://api-m.paypal.com').replace(/\/$/, '')
-    if (process.env.NODE_ENV === 'production' && !base.startsWith('https://')) {
-      throw new Error('PAYPAL_API_BASE must use HTTPS in production')
-    }
-    return base
+    return (process.env.PAYPAL_API_BASE || 'https://api-m.paypal.com').replace(/\/$/, '')
   }
 
   private async accessToken(): Promise<string> {
@@ -44,10 +40,9 @@ export class PayPalPayoutProvider implements PayoutProvider {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: 'grant_type=client_credentials',
-      signal: AbortSignal.timeout(providerTimeoutMs()),
     })
-    if (!res.ok) throw new Error(`PayPal OAuth failed with HTTP ${res.status}`)
-    const json: any = await boundedJson(res, 'PayPal OAuth')
+    if (!res.ok) throw new Error(`oauth failed: ${res.status} ${await res.text()}`)
+    const json: any = await res.json()
     return json.access_token
   }
 
@@ -81,10 +76,9 @@ export class PayPalPayoutProvider implements PayoutProvider {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(providerTimeoutMs()),
       })
-      if (!res.ok) throw new Error(`PayPal payout failed with HTTP ${res.status}`)
-      const json: any = await boundedJson(res, 'PayPal payout')
+      if (!res.ok) throw new Error(`payout failed: ${res.status} ${await res.text()}`)
+      const json: any = await res.json()
       const batchId = json?.batch_header?.payout_batch_id ?? null
       const batchStatus = json?.batch_header?.batch_status ?? 'PENDING'
       // PayPal settles asynchronously; SUCCESS is confirmed later via webhook/poll.
@@ -95,15 +89,4 @@ export class PayPalPayoutProvider implements PayoutProvider {
       return { reference: null, status: 'failed', error: err?.message ?? 'PayPal error' }
     }
   }
-}
-
-function providerTimeoutMs() {
-  return Math.min(Math.max(Number(process.env.PAYOUT_HTTP_TIMEOUT_MS) || 20_000, 1_000), 60_000)
-}
-
-async function boundedJson(response: Response, label: string): Promise<any> {
-  const text = await response.text()
-  if (Buffer.byteLength(text, 'utf8') > 1_048_576) throw new Error(`${label} response was too large`)
-  try { return JSON.parse(text) }
-  catch { throw new Error(`${label} returned invalid JSON`) }
 }

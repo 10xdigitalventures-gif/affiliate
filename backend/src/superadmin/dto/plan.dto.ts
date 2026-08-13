@@ -6,10 +6,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
-  IsUUID,
-  Length,
   Matches,
-  Max,
   Min,
 } from 'class-validator'
 
@@ -19,12 +16,10 @@ export class CreatePlanDto {
   key!: string
 
   @IsString()
-  @Length(2, 100)
   name!: string
 
   @IsOptional()
   @IsString()
-  @Length(0, 500)
   description?: string
 
   @IsInt()
@@ -32,7 +27,7 @@ export class CreatePlanDto {
   priceCents!: number
 
   @IsOptional()
-  @Matches(/^[A-Z]{3}$/, { message: 'currency must be a 3-letter ISO code' })
+  @IsString()
   currency?: string
 
   @IsOptional()
@@ -52,23 +47,15 @@ export class CreatePlanDto {
   @IsOptional()
   @IsInt()
   sortOrder?: number
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(365)
-  trialDays?: number
 }
 
 export class UpdatePlanDto {
   @IsOptional()
   @IsString()
-  @Length(2, 100)
   name?: string
 
   @IsOptional()
   @IsString()
-  @Length(0, 500)
   description?: string
 
   @IsOptional()
@@ -77,7 +64,7 @@ export class UpdatePlanDto {
   priceCents?: number
 
   @IsOptional()
-  @Matches(/^[A-Z]{3}$/, { message: 'currency must be a 3-letter ISO code' })
+  @IsString()
   currency?: string
 
   @IsOptional()
@@ -103,16 +90,10 @@ export class UpdatePlanDto {
   @IsOptional()
   @IsInt()
   sortOrder?: number
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  @Max(365)
-  trialDays?: number
 }
 
 export class AssignPlanDto {
-  @IsUUID()
+  @IsString()
   planId!: string
 
   @IsOptional()

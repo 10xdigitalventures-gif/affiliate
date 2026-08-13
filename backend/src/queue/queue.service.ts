@@ -13,7 +13,6 @@ export class QueueService implements OnModuleDestroy {
       connection: {
         host: process.env.REDIS_HOST || '127.0.0.1',
         port: parseInt(process.env.REDIS_PORT || '6379', 10),
-        password: process.env.REDIS_PASSWORD || undefined,
       },
       defaultJobOptions: { removeOnComplete: 100, removeOnFail: 200 },
     })
@@ -22,18 +21,17 @@ export class QueueService implements OnModuleDestroy {
 
   /**
    * Enqueue a retry job for a failed webhook event.
-   * Exponential backoff for at most three total processing attempts:
-   * retry index 0 -> 5s, index 1 -> 30s, then stop.
+   * Exponential backoff: attempt 0 -> 5s, 1 -> 30s, 2 -> 5min (last try).
    */
-  async addRetry(eventId: string, retryIndex: number): Promise<void> {
-    if (retryIndex >= 2) {
-      this.logger.warn(`WebhookEvent ${eventId} exceeded max delivery attempts`)
+  async addRetry(eventId: string, attempt: number): Promise<void> {
+    if (attempt >= 3) {
+      this.logger.warn(`WebhookEvent ${eventId} exceeded max retries`)
       return
     }
-    const delays = [5_000, 30_000]
-    const delay = delays[retryIndex]
-    await this.queue.add('retry', { eventId, attempt: retryIndex }, { delay })
-    this.logger.log(`Enqueued retry for event ${eventId} in ${delay}ms (attempt ${retryIndex + 2})`)
+    const delays = [5_000, 30_000, 300_000]
+    const delay = delays[attempt] ?? 300_000
+    await this.queue.add('retry', { eventId, attempt }, { delay })
+    this.logger.log(`Enqueued retry for event ${eventId} in ${delay}ms (attempt ${attempt + 1})`)
   }
 
   async onModuleDestroy() {

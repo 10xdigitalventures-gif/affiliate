@@ -225,21 +225,6 @@ function CouponsPanel() {
     }
   }
 
-  async function remove(c: CouponRow) {
-    const orders = c._count?.orders ?? 0
-    if (orders > 0) {
-      alert('This coupon has attributed orders. Disable it instead so historical reports stay accurate.')
-      return
-    }
-    if (!confirm(`Delete coupon ${c.code}? This cannot be undone.`)) return
-    try {
-      await Coupons.remove(c.id)
-      refreshAll()
-    } catch (e) {
-      alert((e as Error).message)
-    }
-  }
-
   const columns: Column<CouponRow>[] = [
     { key: 'code', header: 'Code', render: (r) => <code className="text-2xs font-medium">{r.code}</code> },
     { key: 'store', header: 'Store', render: (r) => r.store?.name ?? '—' },
@@ -249,17 +234,7 @@ function CouponsPanel() {
     { key: 'expiresAt', header: 'Expires', align: 'right', render: (r) => (r.expiresAt ? shortDate(r.expiresAt) : '—') },
     { key: 'status', header: 'Status', render: (r) => <StatusPill status={r.status} /> },
     { key: 'actions', header: '', align: 'right', render: (r) => (
-      <div className="flex justify-end gap-1.5">
-        <Button variant="outline" onClick={() => toggle(r)}>{r.status === 'active' ? 'Disable' : 'Enable'}</Button>
-        <Button
-          variant="danger"
-          disabled={(r._count?.orders ?? 0) > 0}
-          onClick={() => remove(r)}
-          title={(r._count?.orders ?? 0) > 0 ? 'Coupons with orders must be disabled, not deleted' : 'Delete coupon'}
-        >
-          Delete
-        </Button>
-      </div>
+      <Button variant="outline" onClick={() => toggle(r)}>{r.status === 'active' ? 'Disable' : 'Enable'}</Button>
     ) },
   ]
 

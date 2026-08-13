@@ -165,7 +165,7 @@ function DomainRow({
         {domain.purpose === 'tracking' && (
           <div className="pt-1">
             <p className="text-2xs font-medium text-muted mb-1">Store snippet (serves clicks first-party):</p>
-            <pre className="bg-surface rounded-md p-2 text-2xs overflow-x-auto">{`<script src="https://${domain.hostname}/track.js"\n        data-api="https://${domain.hostname}/v1"\n        data-org="${domain.organizationId}"></script>`}</pre>
+            <pre className="bg-surface rounded-md p-2 text-2xs overflow-x-auto">{`<script src="https://${domain.hostname}/track.js"\n        data-api="https://${domain.hostname}/v1"></script>`}</pre>
           </div>
         )}
       </div>

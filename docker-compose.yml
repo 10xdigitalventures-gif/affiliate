@@ -1,39 +1,92 @@
-# Secure local infrastructure. Application processes run with npm/PM2 on the
-# host; use docker-compose.server.yml for the final Linux deployment.
-name: mentoringhub-affiliate-dev
+version: '3.9'
 
 services:
+  # ─── PostgreSQL ────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
+    container_name: affiliate_postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: affiliate_platform
-      POSTGRES_USER: affiliate
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.docker}
-    ports: ["127.0.0.1:5432:5432"]
-    volumes: [affiliate_postgres_dev:/var/lib/postgresql/data]
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U affiliate -d affiliate_platform"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    security_opt: ["no-new-privileges:true"]
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # ─── Redis ───────────────────────────────────────────────────────────────────
   redis:
-    image: redis:7.4-alpine
+    image: redis:7-alpine
+    container_name: affiliate_redis
     restart: unless-stopped
-    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.docker}
-    ports: ["127.0.0.1:6379:6379"]
-    volumes: [affiliate_redis_dev:/data]
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    security_opt: ["no-new-privileges:true"]
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Backend (NestJS API) ────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: affiliate_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/affiliate_platform
+      REDIS_HOST: redis
+      REDIS_PORT: '6379'
+    ports:
+      - '4000:4000'
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+  # ─── Frontend (Next.js) ──────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: affiliate_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:4000/v1
+      NEXTAUTH_URL: http://localhost:3000
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+      - /app/.next
+
+  # ─── Mailtrap (optional local email testing) ─────────────────────────────────
+  # Uncomment to enable local email catching
+  # mailcatcher:
+  #   image: schickling/mailcatcher
+  #   container_name: affiliate_mailcatcher
+  #   ports:
+  #     - '1080:1080'   # Web UI
+  #     - '1025:1025'   # SMTP
 
 volumes:
-  affiliate_postgres_dev:
-  affiliate_redis_dev:
+  postgres_data:
+  redis_data:

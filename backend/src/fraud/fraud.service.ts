@@ -241,9 +241,8 @@ export class FraudService {
     affiliateId: string
     result: FraudCheckResult
   }) {
-    return this.prisma.fraudReview.upsert({
-      where: { orderId_affiliateId: { orderId: args.orderId, affiliateId: args.affiliateId } },
-      create: {
+    return this.prisma.fraudReview.create({
+      data: {
         organizationId: args.organizationId,
         orderId: args.orderId,
         affiliateId: args.affiliateId,
@@ -253,14 +252,10 @@ export class FraudService {
         reasons: args.result.reasons,
         signals: args.result.signals as any,
       },
-      // A provider retry must not reopen or rewrite an administrator's decision.
-      update: {},
     })
   }
 
   async listReviews(organizationId: string, status?: string) {
-    const validStatuses = new Set(['open', 'approved', 'rejected'])
-    if (status && !validStatuses.has(status)) throw new BadRequestException('Invalid fraud review status')
     return this.prisma.fraudReview.findMany({
       where: {
         organizationId,
@@ -283,42 +278,30 @@ export class FraudService {
     if (!review) throw new NotFoundException('Fraud review not found')
     if (review.status !== 'open') throw new BadRequestException('Review is not open')
 
-    const reviewedAt = new Date()
-    const claimed = await this.prisma.fraudReview.updateMany({
-      where: { id: reviewId, organizationId, status: 'open' },
+    const order = review.order
+    // Manual review approval — attribution was already decided at ingest time.
+    const commission = await this.commissions.generateForOrder(
+      organizationId,
+      {
+        id: order.id,
+        storeId: order.storeId,
+        subtotal: order.subtotal,
+        total: order.total,
+        currency: order.currency,
+      },
+      review.affiliateId,
+      { method: 'manual', clickId: null },
+    )
+
+    const updated = await this.prisma.fraudReview.update({
+      where: { id: reviewId },
       data: {
         status: 'approved',
         reviewedById: actorUserId,
-        reviewedAt,
+        reviewedAt: new Date(),
         notes: notes ?? review.notes,
       },
     })
-    if (claimed.count !== 1) throw new BadRequestException('Review was already decided')
-
-    const order = review.order
-    let commission
-    try {
-      // Manual review approval — attribution was already decided at ingest time.
-      commission = await this.commissions.generateForOrder(
-        organizationId,
-        {
-          id: order.id,
-          storeId: order.storeId,
-          subtotal: order.subtotal,
-          total: order.total,
-          currency: order.currency,
-        },
-        review.affiliateId,
-        { method: 'manual', clickId: null },
-      )
-    } catch (error) {
-      await this.prisma.fraudReview.updateMany({
-        where: { id: reviewId, status: 'approved', reviewedById: actorUserId, reviewedAt },
-        data: { status: 'open', reviewedById: null, reviewedAt: null },
-      }).catch(() => undefined)
-      throw error
-    }
-    const updated = await this.prisma.fraudReview.findUniqueOrThrow({ where: { id: reviewId } })
 
     await this.audit.log({
       organizationId,
@@ -339,8 +322,8 @@ export class FraudService {
     if (!review) throw new NotFoundException('Fraud review not found')
     if (review.status !== 'open') throw new BadRequestException('Review is not open')
 
-    const claimed = await this.prisma.fraudReview.updateMany({
-      where: { id: reviewId, organizationId, status: 'open' },
+    const updated = await this.prisma.fraudReview.update({
+      where: { id: reviewId },
       data: {
         status: 'rejected',
         reviewedById: actorUserId,
@@ -348,8 +331,6 @@ export class FraudService {
         notes: notes ?? review.notes,
       },
     })
-    if (claimed.count !== 1) throw new BadRequestException('Review was already decided')
-    const updated = await this.prisma.fraudReview.findUniqueOrThrow({ where: { id: reviewId } })
 
     await this.audit.log({
       organizationId,

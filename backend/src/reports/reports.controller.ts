@@ -4,8 +4,6 @@ import { PermissionsGuard } from '../common/guards/permissions.guard'
 import { RequirePermissions } from '../common/guards/permissions.decorator'
 import { ReportsService } from './reports.service'
 import { JwtPayload } from '../auth/jwt.strategy'
-import { FeatureGuard } from '../entitlements/feature.guard'
-import { RequireFeature } from '../entitlements/require-feature.decorator'
 
 function rangeFromQuery(q: { days?: string; from?: string; to?: string }) {
   return {
@@ -16,7 +14,7 @@ function rangeFromQuery(q: { days?: string; from?: string; to?: string }) {
 }
 
 @Controller('reports')
-@UseGuards(JwtAuthGuard, PermissionsGuard, FeatureGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
 
@@ -32,7 +30,6 @@ export class ReportsController {
   }
 
   @Get('timeseries')
-  @RequireFeature('advancedReports')
   @RequirePermissions('reports.read')
   timeseries(
     @Req() req: { user: JwtPayload },
@@ -44,7 +41,6 @@ export class ReportsController {
   }
 
   @Get('top-affiliates')
-  @RequireFeature('advancedReports')
   @RequirePermissions('reports.read')
   topAffiliates(
     @Req() req: { user: JwtPayload },
@@ -61,7 +57,6 @@ export class ReportsController {
   }
 
   @Get('by-source')
-  @RequireFeature('advancedReports')
   @RequirePermissions('reports.read')
   bySource(
     @Req() req: { user: JwtPayload },
@@ -73,7 +68,6 @@ export class ReportsController {
   }
 
   @Get('by-store')
-  @RequireFeature('advancedReports')
   @RequirePermissions('reports.read')
   byStore(
     @Req() req: { user: JwtPayload },
@@ -85,7 +79,6 @@ export class ReportsController {
   }
 
   @Get('by-product')
-  @RequireFeature('advancedReports')
   @RequirePermissions('reports.read')
   byProduct(
     @Req() req: { user: JwtPayload },
@@ -102,7 +95,6 @@ export class ReportsController {
   }
 
   @Get('by-category')
-  @RequireFeature('advancedReports')
   @RequirePermissions('reports.read')
   byCategory(
     @Req() req: { user: JwtPayload },
@@ -114,7 +106,6 @@ export class ReportsController {
   }
 
   @Get('export')
-  @RequireFeature('advancedReports')
   @RequirePermissions('reports.read')
   @Header('Content-Type', 'text/csv')
   @Header('Content-Disposition', 'attachment; filename="export.csv"')

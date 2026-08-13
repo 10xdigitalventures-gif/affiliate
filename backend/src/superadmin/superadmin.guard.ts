@@ -1,7 +1,13 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common'
 import { JwtPayload } from '../auth/jwt.strategy'
 
-/** Allows only platform super admins (isSuperAdmin on the JWT). */
+/**
+ * Allows only platform super admins.
+ *
+ * `isSuperAdmin` is read back from the database by JwtStrategy on every
+ * request, not taken from the JWT claims, so revoking the flag takes effect
+ * without waiting for the token to expire.
+ */
 @Injectable()
 export class SuperAdminGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {

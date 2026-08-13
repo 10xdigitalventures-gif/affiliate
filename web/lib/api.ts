@@ -1,83 +1,43 @@
-// Thin typed API client. Browser sessions use Secure + HttpOnly cookies issued
-// by the API, so JavaScript never reads access or refresh tokens.
+// Thin typed API client. Reads the JWT saved at login from sessionStorage.
+// sessionStorage is cleared when the tab closes, reducing the XSS exposure
+// window compared with localStorage. Combine with a strict Content-Security-
+// Policy (see next.config.js) for defence-in-depth.
 const BASE =
-  (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4100/v1').replace(/\/$/, '')
+  (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/v1').replace(/\/$/, '')
+
+export function getToken() {
+  if (typeof window === 'undefined') return null
+  return window.sessionStorage.getItem('token')
+}
+
+export function getRefreshToken() {
+  if (typeof window === 'undefined') return null
+  return window.sessionStorage.getItem('refresh_token')
+}
 
 export function setTokens(accessToken: string | null, refreshToken?: string | null) {
   if (typeof window === 'undefined') return
-  // Remove credentials left by v5. New tokens live only in HttpOnly cookies.
-  window.sessionStorage.removeItem('token')
-  window.sessionStorage.removeItem('refresh_token')
-}
-
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message)
-    this.name = 'ApiError'
+  if (accessToken) window.sessionStorage.setItem('token', accessToken)
+  else window.sessionStorage.removeItem('token')
+  if (refreshToken !== undefined) {
+    if (refreshToken) window.sessionStorage.setItem('refresh_token', refreshToken)
+    else window.sessionStorage.removeItem('refresh_token')
   }
 }
 
-let refreshInFlight: Promise<boolean> | null = null
-
-async function refreshBrowserSession(): Promise<boolean> {
-  if (!refreshInFlight) {
-    refreshInFlight = fetch(`${BASE}/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-      body: '{}',
-    })
-      .then((response) => response.ok)
-      .catch(() => false)
-      .finally(() => { refreshInFlight = null })
-  }
-  return refreshInFlight
-}
-
-export async function api<T = any>(path: string, init: RequestInit = {}, allowRefresh = true): Promise<T> {
-  let res = await fetch(`${BASE}${path}`, {
+export async function api<T = any>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = getToken()
+  const res = await fetch(`${BASE}${path}`, {
     ...init,
-    credentials: 'include',
     headers: {
       'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(init.headers || {}),
     },
   })
-  const refreshEligible = ![
-    '/auth/login',
-    '/auth/email-code/request',
-    '/auth/email-code/verify',
-    '/auth/refresh',
-    '/auth/forgot-password',
-    '/auth/reset-password',
-    '/auth/accept-invite',
-    '/auth/2fa/verify',
-    '/auth/sso/exchange',
-  ].includes(path)
-  if (res.status === 401 && allowRefresh && refreshEligible) {
-    if (await refreshBrowserSession()) {
-      res = await fetch(`${BASE}${path}`, {
-        ...init,
-        credentials: 'include',
-        headers: { 'content-type': 'application/json', ...(init.headers || {}) },
-      })
-    }
-  }
   if (!res.ok) {
-    const raw = await res.text().catch(() => '')
-    let message = raw || res.statusText || `Request failed (${res.status})`
-    try {
-      const parsed = JSON.parse(raw)
-      const value = parsed?.message
-      if (Array.isArray(value)) message = value.join(', ')
-      else if (typeof value === 'string') message = value
-    } catch {
-      // Keep a non-JSON response as-is.
-    }
-    throw new ApiError(message, res.status)
+    const msg = await res.text().catch(() => res.statusText)
+    throw new Error(msg || `Request failed (${res.status})`)
   }
   return res.status === 204 ? (undefined as T) : res.json()
 }
@@ -89,113 +49,53 @@ export type AuthUser = {
   id: string
   email: string
   fullName?: string | null
-  phoneNumber?: string | null
-  avatarUrl?: string | null
   organizationId: string
-  organization?: { id: string; name: string; slug: string }
   permissions: string[]
   affiliateId?: string | null
   isSuperAdmin?: boolean
 }
-export type AuthSession = { user: AuthUser }
+export type AuthTokens = { access_token: string; refresh_token: string; user: AuthUser }
 
 export const Auth = {
-  requestEmailCode: (email: string, workspace?: string) =>
-    api<{ ok: true; challenge: string; expiresInSeconds: number }>('/auth/email-code/request', {
-      method: 'POST',
-      body: JSON.stringify({ email, workspace: workspace || undefined }),
-    }, false),
-  verifyEmailCode: (challenge: string, code: string) =>
-    api<AuthSession | { twoFactorRequired: true; challenge: string }>('/auth/email-code/verify', {
-      method: 'POST',
-      body: JSON.stringify({ challenge, code }),
-    }, false),
-  async login(email: string, password: string, workspace?: string) {
-    const res = await api<AuthSession>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password, workspace: workspace || undefined }) })
-    setTokens(null, null)
+  async login(email: string, password: string) {
+    const res = await api<AuthTokens>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })
+    setTokens(res.access_token, res.refresh_token)
     return res
   },
   async refresh() {
-    return api<AuthSession>('/auth/refresh', { method: 'POST', body: '{}' }, false)
+    const refresh_token = getRefreshToken()
+    if (!refresh_token) throw new Error('No refresh token')
+    const res = await api<AuthTokens>('/auth/refresh', { method: 'POST', body: JSON.stringify({ refresh_token }) })
+    setTokens(res.access_token, res.refresh_token)
+    return res
   },
   async logout() {
+    const refresh_token = getRefreshToken()
     try {
-      await api('/auth/logout', { method: 'POST', body: '{}' }, false)
+      await api('/auth/logout', { method: 'POST', body: JSON.stringify({ refresh_token }) })
     } finally {
       setTokens(null, null)
     }
   },
   logoutAll: () => api('/auth/logout-all', { method: 'POST' }),
   me: () => api<AuthUser & { status: string; emailVerifiedAt: string | null; twoFactorEnabled: boolean; isSuperAdmin: boolean }>('/auth/me'),
-  updateProfile: (payload: { fullName: string; email: string; currentPassword?: string; phoneNumber?: string | null; avatarUrl?: string | null }) =>
-    api<AuthUser & { status: string; emailVerifiedAt: string | null; twoFactorEnabled: boolean; isSuperAdmin: boolean }>('/auth/me', {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    }),
   changePassword: (currentPassword: string, newPassword: string) =>
     api<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
-  forgotPassword: (email: string, workspace?: string) =>
-    api<{ ok: boolean }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email, workspace: workspace || undefined }) }),
+  forgotPassword: (email: string) =>
+    api<{ ok: boolean }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
   resetPassword: (token: string, password: string) =>
     api<{ ok: boolean }>('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) }),
   invite: (payload: { email: string; fullName?: string; roleId?: string }) =>
     api<{ ok: boolean; userId: string }>('/auth/invitations', { method: 'POST', body: JSON.stringify(payload) }),
   acceptInvite: async (token: string, password: string, fullName?: string) => {
-    const res = await api<AuthSession>('/auth/accept-invite', { method: 'POST', body: JSON.stringify({ token, password, fullName }) })
-    setTokens(null, null)
+    const res = await api<AuthTokens>('/auth/accept-invite', { method: 'POST', body: JSON.stringify({ token, password, fullName }) })
+    setTokens(res.access_token, res.refresh_token)
     return res
   },
 }
 
-// ---- Workspace team & roles ----
-export type TeamRole = {
-  id: string
-  organizationId: string | null
-  name: string
-  isSystem: boolean
-  permissions: Array<{ permission: { id: string; key: string; description?: string | null } }>
-  _count?: { users: number; invitations: number }
-}
-export type TeamMember = {
-  id: string
-  email: string
-  fullName?: string | null
-  phoneNumber?: string | null
-  avatarUrl?: string | null
-  status: 'active' | 'invited' | 'suspended'
-  isSuperAdmin: boolean
-  lastLoginAt?: string | null
-  createdAt: string
-  roles: Array<{ role: Pick<TeamRole, 'id' | 'name' | 'isSystem' | 'organizationId'> }>
-}
-export type TeamPermission = { id: string; key: string; description?: string | null }
-export type TeamInvitation = {
-  id: string
-  email: string
-  expiresAt: string
-  createdAt: string
-  invitedByUserId?: string | null
-  role?: { id: string; name: string } | null
-}
-
-export const Team = {
-  members: () => api<TeamMember[]>('/team/members'),
-  roles: () => api<TeamRole[]>('/team/roles'),
-  permissions: () => api<TeamPermission[]>('/team/permissions'),
-  invitations: () => api<TeamInvitation[]>('/team/invitations'),
-  createRole: (name: string, permissionKeys: string[]) =>
-    api<TeamRole>('/team/roles', { method: 'POST', body: JSON.stringify({ name, permissionKeys }) }),
-  updateRole: (id: string, payload: { name?: string; permissionKeys?: string[] }) =>
-    api<TeamRole>(`/team/roles/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-  deleteRole: (id: string) => api<{ ok: boolean }>(`/team/roles/${id}`, { method: 'DELETE' }),
-  updateMember: (id: string, payload: { roleIds?: string[]; status?: 'active' | 'suspended' }) =>
-    api<TeamMember>(`/team/members/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-  revokeInvitation: (id: string) =>
-    api<{ ok: boolean }>(`/team/invitations/${id}`, { method: 'DELETE' }),
-}
-
 // Login response is either full tokens or a 2FA challenge.
-export type LoginResult = AuthSession | { twoFactorRequired: true; challenge: string }
+export type LoginResult = AuthTokens | { twoFactorRequired: true; challenge: string }
 
 // ---- Two-factor authentication ----
 export type TwoFactorSetupData = { secret: string; otpauthUrl: string }
@@ -207,8 +107,8 @@ export const TwoFactor = {
   disable: (code: string) =>
     api<{ ok: boolean }>('/auth/2fa/disable', { method: 'POST', body: JSON.stringify({ code }) }),
   async verify(challenge: string, code: string) {
-    const res = await api<AuthSession>('/auth/2fa/verify', { method: 'POST', body: JSON.stringify({ challenge, code }) })
-    setTokens(null, null)
+    const res = await api<AuthTokens>('/auth/2fa/verify', { method: 'POST', body: JSON.stringify({ challenge, code }) })
+    setTokens(res.access_token, res.refresh_token)
     return res
   },
 }
@@ -219,7 +119,9 @@ export type SsoSettingsData = {
   provider: string
   clientId: string
   hasClientSecret: boolean
-  issuerUrl: string
+  authorizationUrl: string
+  tokenUrl: string
+  userinfoUrl: string
   scopes: string
   allowedDomains: string[]
   autoProvision: boolean
@@ -231,13 +133,8 @@ export const Sso = {
   settings: () => api<SsoSettingsData>('/settings/sso'),
   update: (dto: Partial<Omit<SsoSettingsData, 'hasClientSecret' | 'callbackUrl'>> & { clientSecret?: string }) =>
     api<SsoSettingsData>('/settings/sso', { method: 'PATCH', body: JSON.stringify(dto) }),
-  authorizeUrl: (slug: string, next?: string) =>
-    api<{ url: string }>(`/auth/sso/${encodeURIComponent(slug)}/authorize${next ? `?next=${encodeURIComponent(next)}` : ''}`),
-  exchange: async (code: string) => {
-    const res = await api<AuthSession>('/auth/sso/exchange', { method: 'POST', body: JSON.stringify({ code }) }, false)
-    setTokens(null, null)
-    return res
-  },
+  authorizeUrl: (slug: string, redirectUri?: string) =>
+    api<{ url: string }>(`/auth/sso/${encodeURIComponent(slug)}/authorize${redirectUri ? `?redirectUri=${encodeURIComponent(redirectUri)}` : ''}`),
 }
 
 // ---- Bulk CSV import / export ----
@@ -251,8 +148,9 @@ export type ImportResult = {
 export type BulkExportEntity = 'affiliates' | 'commissions' | 'orders' | 'payouts'
 
 async function downloadBulkCsv(path: string, filename: string) {
+  const token = getToken()
   const res = await fetch(`${BASE}${path}`, {
-    credentials: 'include',
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}) },
   })
   if (!res.ok) throw new Error((await res.text().catch(() => res.statusText)) || `Request failed (${res.status})`)
   const blob = await res.blob()
@@ -348,7 +246,7 @@ export type ConnectStoreInput = {
 // ---- Shopify embedded (App Bridge session-token exchange) ----
 export const ShopifyApp = {
   tokenExchange: (sessionToken: string) =>
-    api<AuthSession>('/shopify/token-exchange', {
+    api<AuthTokens>('/shopify/token-exchange', {
       method: 'POST',
       headers: { authorization: `Bearer ${sessionToken}` },
     }),
@@ -445,7 +343,6 @@ export const Coupons = {
   create: (dto: CreateCouponInput) => api<CouponRow>('/coupons', { method: 'POST', body: JSON.stringify(dto) }),
   bulkGenerate: (dto: BulkGenerateInput) => api<BulkGenerateResult>('/coupons/bulk-generate', { method: 'POST', body: JSON.stringify(dto) }),
   update: (id: string, dto: UpdateCouponInput) => api<CouponRow>(`/coupons/${id}`, { method: 'PATCH', body: JSON.stringify(dto) }),
-  remove: (id: string) => api<{ id: string; deleted: boolean }>(`/coupons/${id}`, { method: 'DELETE' }),
   assign: (id: string, affiliateId: string) => api<CouponRow>(`/coupons/${id}/assign/${affiliateId}`, { method: 'POST' }),
 }
 
@@ -644,8 +541,9 @@ export async function downloadCsv(
   entity: 'commissions' | 'orders' | 'affiliates',
   range: ReportRange = {},
 ) {
+  const token = getToken()
   const res = await fetch(`${BASE}/reports/export${reportQs(range, { entity })}`, {
-    credentials: 'include',
+    headers: token ? { authorization: `Bearer ${token}` } : {},
   })
   if (!res.ok) throw new Error('Export failed')
   const blob = await res.blob()
@@ -663,7 +561,6 @@ export async function downloadCsv(
 export type PortalSummary = {
   affiliateCode: string
   referralSlug: string
-  currency: string
   lifetimeEarnings: number
   availableBalance: number
   clicks: number
@@ -675,46 +572,21 @@ export type PortalSummary = {
 export type PortalLink = {
   id: string
   shortCode: string
-  shortUrl: string
   destinationUrl: string
   clicksCount: number
   createdAt: string
-}
-export type CreatePortalLinkInput = {
-  destinationUrl: string
-  shortCode?: string
-  utmSource?: string
-  utmMedium?: string
-  utmCampaign?: string
-  utmContent?: string
-  utmTerm?: string
-}
-export type PortalCoupon = {
-  id: string
-  code: string
-  discountType: 'percentage' | 'fixed' | null
-  status: 'active' | 'expired' | 'disabled'
-  expiresAt: string | null
-  createdAt: string
-  store: { id: string; name: string; domain: string; platform: string }
-  _count: { orders: number }
 }
 
 export const Portal = {
   summary: () => api<PortalSummary>('/portal/summary'),
   links: () => api<PortalLink[]>('/portal/links'),
-  createLink: (dto: CreatePortalLinkInput) => api<PortalLink>('/portal/links', { method: 'POST', body: JSON.stringify(dto) }),
-  deleteLink: (id: string) => api<{ id: string; deleted: boolean }>(`/portal/links/${id}`, { method: 'DELETE' }),
-  coupons: () => api<PortalCoupon[]>('/portal/coupons'),
   orders: () => api<OrderRow[]>('/portal/orders'),
   commissions: () => api<CommissionRow[]>('/portal/commissions'),
   payouts: () => api<PayoutRow[]>('/portal/payouts'),
-  requestPayout: (method: string, currency?: string) => api<{ id: string; amount: number; currency: string; status: string }>('/portal/payouts/request', { method: 'POST', body: JSON.stringify({ method, currency }) }),
+  requestPayout: (method: string) => api<{ id: string; amount: number; status: string }>('/portal/payouts/request', { method: 'POST', body: JSON.stringify({ method }) }),
   payoutMethods: () => api<PayoutMethodRecord[]>('/portal/payout-methods'),
-  addPayoutMethod: (method: string, details: Record<string, string>) =>
-    api<PayoutMethodRecord>('/portal/payout-methods', { method: 'POST', body: JSON.stringify({ method, details }) }),
+  addPayoutMethod: (method: string) => api<PayoutMethodRecord>('/portal/payout-methods', { method: 'POST', body: JSON.stringify({ method }) }),
   deletePayoutMethod: (id: string) => api('/portal/payout-methods/' + id, { method: 'DELETE' }),
-  setDefaultPayoutMethod: (id: string) => api<PayoutMethodRecord>(`/portal/payout-methods/${id}/default`, { method: 'POST' }),
   tax: () => api<TaxStatus>('/portal/tax'),
   submitTax: (dto: TaxFormInput) => api<TaxStatus>('/portal/tax', { method: 'POST', body: JSON.stringify(dto) }),
 }
@@ -849,7 +721,6 @@ export type SignupSettingsData = {
   signupEnabled: boolean
   autoApprove: boolean
   requireWebsite: boolean
-  allowAffiliateLinkCreation: boolean
   branding?: SignupBranding
   embedBranding?: EmbedBranding
   slug?: string
@@ -859,7 +730,6 @@ export type SignupSettingsUpdate = {
   signupEnabled: boolean
   autoApprove: boolean
   requireWebsite?: boolean
-  allowAffiliateLinkCreation?: boolean
   headline?: string
   subheadline?: string
   imageUrl?: string
@@ -1021,7 +891,6 @@ export type Plan = {
   isPublic: boolean
   isArchived: boolean
   sortOrder: number
-  trialDays: number
   _count?: { subscriptions: number }
 }
 export type EntitlementContext = {
@@ -1111,7 +980,6 @@ export type DomainInstructions = {
 export type DomainPurpose = 'login' | 'tracking'
 export type CustomDomain = {
   id: string
-  organizationId: string
   hostname: string
   status: 'pending' | 'verifying' | 'active' | 'failed'
   purpose: DomainPurpose
@@ -1122,7 +990,7 @@ export type CustomDomain = {
   createdAt: string
   instructions: DomainInstructions
 }
-export type TrackingBase = { baseUrl: string; custom: boolean; organizationId: string }
+export type TrackingBase = { baseUrl: string; custom: boolean }
 export const Domains = {
   list: () => api<CustomDomain[]>('/domains'),
   add: (hostname: string, purpose: DomainPurpose = 'login') =>
@@ -1137,10 +1005,7 @@ export const Domains = {
 export type FeatureKey =
   | 'apiAccess' | 'webhooks' | 'fraudTools' | 'multiTierCommissions'
   | 'advancedReports' | 'bulkOperations' | 'branding' | 'customDomain' | 'prioritySupport'
-  | 'enterpriseSso'
-export type LimitKey =
-  | 'affiliates' | 'stores' | 'teamMembers' | 'apiKeys'
-  | 'trackingLinksPerAffiliate' | 'monthlyPayoutRequestsPerAffiliate'
+export type LimitKey = 'affiliates' | 'stores' | 'teamMembers' | 'apiKeys'
 
 export const FEATURE_CATALOG: { key: FeatureKey; label: string }[] = [
   { key: 'apiAccess', label: 'API access' },
@@ -1151,7 +1016,6 @@ export const FEATURE_CATALOG: { key: FeatureKey; label: string }[] = [
   { key: 'bulkOperations', label: 'Bulk import / export' },
   { key: 'branding', label: 'Custom branding (white-label)' },
   { key: 'customDomain', label: 'Custom login domain' },
-  { key: 'enterpriseSso', label: 'Enterprise SSO (OIDC)' },
   { key: 'prioritySupport', label: 'Priority support' },
 ]
 export const LIMIT_CATALOG: { key: LimitKey; label: string }[] = [
@@ -1159,8 +1023,6 @@ export const LIMIT_CATALOG: { key: LimitKey; label: string }[] = [
   { key: 'stores', label: 'Connected stores' },
   { key: 'teamMembers', label: 'Team members' },
   { key: 'apiKeys', label: 'API keys' },
-  { key: 'trackingLinksPerAffiliate', label: 'Tracking links / affiliate' },
-  { key: 'monthlyPayoutRequestsPerAffiliate', label: 'Payout requests / affiliate / month' },
 ]
 
 export type AdminOverview = {
@@ -1187,7 +1049,6 @@ export type AdminPlan = {
   isPublic: boolean
   isArchived: boolean
   sortOrder: number
-  trialDays: number
   _count?: { subscriptions: number }
 }
 
@@ -1211,19 +1072,6 @@ export type AdminTenantDetail = {
   createdAt: string
   subscription: (null | { id: string; status: string; seats: number; plan: AdminPlan }) & Record<string, any>
   _count: { users: number; affiliates: number; stores: number; apiKeys: number }
-  entitlements: EntitlementContext
-  usage: Record<string, number>
-}
-
-export type CreateTenantInput = {
-  name: string
-  slug: string
-  ownerEmail: string
-  ownerName?: string
-  planId?: string
-  defaultCurrency?: string
-  status?: 'active' | 'trial'
-  sendLoginCode?: boolean
 }
 
 export type CreatePlanInput = {
@@ -1237,7 +1085,6 @@ export type CreatePlanInput = {
   limits: Record<string, number>
   isPublic?: boolean
   sortOrder?: number
-  trialDays?: number
 }
 export type UpdatePlanInput = Partial<Omit<CreatePlanInput, 'key'>> & { isArchived?: boolean }
 
@@ -1250,12 +1097,8 @@ export const SuperAdmin = {
   deletePlan: (id: string) => api<{ archived: boolean; deleted?: boolean }>(`/admin/plans/${id}`, { method: 'DELETE' }),
   // tenants
   tenants: (search?: string) => api<AdminTenant[]>(`/admin/tenants${qs({ search })}`),
-  createTenant: (dto: CreateTenantInput) => api<AdminTenant & { owner: { id: string; email: string; fullName?: string | null }; loginCodeSent: boolean; loginCodeWarning?: string | null }>('/admin/tenants', {
-    method: 'POST',
-    body: JSON.stringify(dto),
-  }),
   tenant: (id: string) => api<AdminTenantDetail>(`/admin/tenants/${id}`),
-  assignPlan: (id: string, dto: { planId: string; status?: string; seats?: number; overrides?: { features?: Record<string, boolean>; limits?: Record<string, number> } }) =>
+  assignPlan: (id: string, dto: { planId: string; status?: string; seats?: number }) =>
     api(`/admin/tenants/${id}/plan`, { method: 'PATCH', body: JSON.stringify(dto) }),
   setStatus: (id: string, status: 'active' | 'suspended' | 'trial') =>
     api(`/admin/tenants/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),

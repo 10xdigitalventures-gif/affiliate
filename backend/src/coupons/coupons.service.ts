@@ -1,5 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common'
-import { randomInt } from 'node:crypto'
+import { Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { CreateCouponDto } from './dto/create-coupon.dto'
 import { UpdateCouponDto } from './dto/update-coupon.dto'
@@ -33,37 +32,25 @@ export class CouponsService {
 
   private randomCode(prefix = '', length = 6) {
     let s = ''
-    for (let i = 0; i < length; i++) s += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]
+    for (let i = 0; i < length; i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]
     return `${prefix}${s}`
-  }
-
-  private isUniqueConflict(error: unknown) {
-    return !!error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'P2002'
   }
 
   async create(organizationId: string, dto: CreateCouponDto) {
     await this.ensureStore(organizationId, dto.storeId)
     if (dto.affiliateId) await this.ensureAffiliate(organizationId, dto.affiliateId)
-    try {
-      return await this.prisma.coupon.create({
-        data: {
-          storeId: dto.storeId,
-          affiliateId: dto.affiliateId ?? null,
-          code: dto.code.trim().toUpperCase(),
-          discountType: dto.discountType ?? null,
-          status: 'active',
-        },
-      })
-    } catch (error) {
-      if (this.isUniqueConflict(error)) throw new ConflictException('That coupon code already exists for this store')
-      throw error
-    }
+    return this.prisma.coupon.create({
+      data: {
+        storeId: dto.storeId,
+        affiliateId: dto.affiliateId ?? null,
+        code: dto.code,
+        discountType: dto.discountType ?? null,
+        status: 'active',
+      },
+    })
   }
 
   async list(organizationId: string, params: ListCouponsParams = {}) {
-    if (params.status && !new Set(['active', 'expired', 'disabled']).has(params.status)) {
-      throw new BadRequestException('Invalid coupon status')
-    }
     const where: any = { store: { organizationId } }
     if (params.storeId) where.storeId = params.storeId
     if (params.affiliateId) where.affiliateId = params.affiliateId
@@ -105,63 +92,45 @@ export class CouponsService {
     if (!coupon) throw new NotFoundException('Coupon not found')
     if (dto.affiliateId) await this.ensureAffiliate(organizationId, dto.affiliateId)
     const data: any = {}
-    if (dto.code !== undefined) data.code = dto.code.trim().toUpperCase()
+    if (dto.code !== undefined) data.code = dto.code
     if (dto.discountType !== undefined) data.discountType = dto.discountType
     if (dto.status !== undefined) data.status = dto.status
     if ('affiliateId' in dto) data.affiliateId = dto.affiliateId || null
     if ('expiresAt' in dto) data.expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null
-    try {
-      return await this.prisma.coupon.update({ where: { id }, data })
-    } catch (error) {
-      if (this.isUniqueConflict(error)) throw new ConflictException('That coupon code already exists for this store')
-      throw error
-    }
+    return this.prisma.coupon.update({ where: { id }, data })
   }
 
   async setStatus(organizationId: string, id: string, status: 'active' | 'expired' | 'disabled') {
     return this.update(organizationId, id, { status })
   }
 
-  async remove(organizationId: string, id: string) {
-    const coupon = await this.prisma.coupon.findFirst({
-      where: { id, store: { organizationId } },
-      select: { id: true, _count: { select: { orders: true } } },
-    })
-    if (!coupon) throw new NotFoundException('Coupon not found')
-    if (coupon._count.orders > 0) {
-      throw new ConflictException('Coupon has attributed orders and cannot be deleted; disable it instead')
-    }
-    await this.prisma.coupon.delete({ where: { id } })
-    return { id, deleted: true }
-  }
-
   /** Generate a batch of unique coupon codes for a store. */
   async bulkGenerate(organizationId: string, dto: BulkGenerateCouponsDto) {
     await this.ensureStore(organizationId, dto.storeId)
     if (dto.affiliateId) await this.ensureAffiliate(organizationId, dto.affiliateId)
-    const prefix = dto.prefix?.trim().toUpperCase() ?? ''
+    const prefix = dto.prefix ?? ''
     const length = dto.length ?? 6
     const created: Array<{ id: string; code: string }> = []
     for (let i = 0; i < dto.count; i++) {
-      let coupon: { id: string; code: string } | null = null
+      let code = ''
       for (let attempt = 0; attempt < 12; attempt++) {
         const candidate = this.randomCode(prefix, length)
-        try {
-          coupon = await this.prisma.coupon.create({
-            data: {
-              storeId: dto.storeId,
-              affiliateId: dto.affiliateId ?? null,
-              code: candidate,
-              discountType: dto.discountType ?? null,
-              status: 'active',
-            },
-          })
+        const exists = await this.prisma.coupon.findFirst({ where: { storeId: dto.storeId, code: candidate } })
+        if (!exists) {
+          code = candidate
           break
-        } catch (error) {
-          if (!this.isUniqueConflict(error)) throw error
         }
       }
-      if (!coupon) continue
+      if (!code) continue
+      const coupon = await this.prisma.coupon.create({
+        data: {
+          storeId: dto.storeId,
+          affiliateId: dto.affiliateId ?? null,
+          code,
+          discountType: dto.discountType ?? null,
+          status: 'active',
+        },
+      })
       created.push({ id: coupon.id, code: coupon.code })
     }
     return { requested: dto.count, created: created.length, coupons: created }
@@ -185,7 +154,7 @@ export class CouponsService {
     return this.prisma.coupon.findFirst({
       where: {
         storeId,
-        code: code.trim().toUpperCase(),
+        code,
         status: 'active',
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },

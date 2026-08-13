@@ -19,7 +19,7 @@ export class ApplicationsController {
   @Post(':id/approve')
   @RequirePermissions('affiliates.write')
   approve(@Req() req: { user: JwtPayload }, @Param('id') id: string) {
-    return this.applications.approve(req.user.organizationId, id, req.user.sub)
+    return this.applications.approve(req.user.organizationId, id)
   }
 
   @Post(':id/reject')

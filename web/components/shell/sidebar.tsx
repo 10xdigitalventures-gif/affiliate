@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-  LayoutDashboard, Users, UserCog, Store, ShoppingCart, Wallet, BarChart3, Settings, Link2, ShieldAlert, Package, Megaphone, CreditCard, FileText,
+  LayoutDashboard, Users, Store, ShoppingCart, Wallet, BarChart3, Settings, Link2, ShieldAlert, Package, Megaphone, CreditCard, FileText,
 } from 'lucide-react'
 
 const NAV = [
@@ -18,7 +18,6 @@ const NAV = [
   { href: '/fraud', label: 'Fraud', icon: ShieldAlert },
   { href: '/reports', label: 'Reports', icon: BarChart3 },
   { href: '/tax', label: 'Tax & 1099', icon: FileText },
-  { href: '/team', label: 'Team', icon: UserCog },
   { href: '/settings', label: 'Settings', icon: Settings },
 ]
 

@@ -1,129 +1,79 @@
 'use client'
-
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { api, Auth, setTokens, TwoFactor, Sso } from '@/lib/api'
+import { api, setTokens, TwoFactor, Sso } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import Link from 'next/link'
 
-type LoginUser = { permissions: string[]; affiliateId?: string | null; isSuperAdmin?: boolean }
+type LoginUser = { permissions: string[]; affiliateId?: string | null }
+type Workspace = { slug: string; name: string }
 type LoginResponse =
-  | { user: LoginUser }
+  | { access_token: string; refresh_token: string; user: LoginUser }
   | { twoFactorRequired: true; challenge: string }
-type SignInMode = 'email' | 'password' | 'sso'
+  // Returned when the address exists in several workspaces and the request
+  // carried no workspace hint. The password has already been verified at this
+  // point; the challenge only picks which of those accounts to sign in as.
+  | { workspaceSelectionRequired: true; challenge: string; workspaces: Workspace[] }
 
 export default function LoginPage() {
   const router = useRouter()
-  const [mode, setMode] = useState<SignInMode>('email')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [workspace, setWorkspace] = useState('')
+  const [email, setEmail] = useState('admin@demo.test')
+  const [password, setPassword] = useState('password123')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [checkingSession, setCheckingSession] = useState(true)
 
-  // Passwordless email-code state.
-  const [emailChallenge, setEmailChallenge] = useState<string | null>(null)
-  const [emailCode, setEmailCode] = useState('')
-  const [sentTo, setSentTo] = useState('')
-
-  // Authenticator-app 2FA remains an additional factor when enabled.
+  // 2FA step state
   const [challenge, setChallenge] = useState<string | null>(null)
   const [code, setCode] = useState('')
 
+  // Workspace-selection step state
+  const [wsChallenge, setWsChallenge] = useState<string | null>(null)
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+
+  // SSO step state
   const [ssoSlug, setSsoSlug] = useState('')
+  const [showSso, setShowSso] = useState(false)
 
   useEffect(() => {
+    // Surface an SSO error bounced back from the callback (?ssoError=...).
     const params = new URLSearchParams(window.location.search)
-    const ssoError = params.get('ssoError')
-    if (ssoError) setError('SSO sign-in could not be completed. Please try email sign-in or contact your workspace administrator.')
-
-    Auth.me()
-      .then((user) => routeByUser(user))
-      .catch(() => {
-        setTokens(null, null)
-        window.localStorage.removeItem('user')
-        setCheckingSession(false)
-      })
-    // routeByUser is intentionally stable for this initial session check.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const e = params.get('ssoError')
+    if (e) setError(decodeURIComponent(e))
   }, [])
 
   function routeByUser(user: LoginUser) {
-    const affiliateOnly = Boolean(user.affiliateId) && user.permissions.length === 0
-    const requested = new URLSearchParams(window.location.search).get('next')
-    const safeRequested = requested?.startsWith('/') && !requested.startsWith('//') ? requested : null
-    if (safeRequested) {
-      const allowed = user.isSuperAdmin
-        ? safeRequested.startsWith('/admin')
-        : affiliateOnly
-          ? safeRequested.startsWith('/portal')
-          : !safeRequested.startsWith('/portal') && !safeRequested.startsWith('/admin')
-      if (allowed) {
-        router.replace(safeRequested)
-        return
-      }
+    if (user.affiliateId && user.permissions.length === 0) router.push('/portal')
+    else router.push('/dashboard')
+  }
+
+  /** Shared handling of every /auth/login and /auth/select-workspace reply. */
+  function handleLoginResponse(res: LoginResponse) {
+    if ('workspaceSelectionRequired' in res) {
+      setWsChallenge(res.challenge)
+      setWorkspaces(res.workspaces)
+      return
     }
-    router.replace(user.isSuperAdmin ? '/admin' : affiliateOnly ? '/portal' : '/dashboard')
+    if ('twoFactorRequired' in res) {
+      setWsChallenge(null)
+      setChallenge(res.challenge)
+      return
+    }
+    setTokens(res.access_token, res.refresh_token)
+    window.localStorage.setItem('user', JSON.stringify(res.user))
+    routeByUser(res.user)
   }
 
-  function finishLogin(user: LoginUser) {
-    setTokens(null, null)
-    window.localStorage.setItem('user', JSON.stringify(user))
-    routeByUser(user)
-  }
-
-  async function sendEmailCode(event?: React.SyntheticEvent) {
-    event?.preventDefault()
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
     setLoading(true)
     setError(null)
     try {
-      const normalized = email.trim().toLowerCase()
-      const result = await Auth.requestEmailCode(normalized)
-      setEmailChallenge(result.challenge)
-      setSentTo(normalized)
-      setEmailCode('')
-    } catch (err) {
-      setError((err as Error).message || 'The sign-in code could not be sent')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function verifyEmailCode(event: React.FormEvent) {
-    event.preventDefault()
-    if (!emailChallenge) return
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await Auth.verifyEmailCode(emailChallenge, emailCode.trim())
-      if ('twoFactorRequired' in result) {
-        setEmailChallenge(null)
-        setChallenge(result.challenge)
-        return
-      }
-      finishLogin(result.user)
-    } catch (err) {
-      setError((err as Error).message || 'Invalid or expired sign-in code')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function submitPassword(event: React.FormEvent) {
-    event.preventDefault()
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await api<LoginResponse>('/auth/login', {
+      // No orgSlug is sent: the API resolves the workspace from the login
+      // domain or subdomain, and asks below only if it genuinely cannot tell.
+      const res = await api<LoginResponse>('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password, workspace: workspace.trim().toLowerCase() || undefined }),
+        body: JSON.stringify({ email, password }),
       })
-      if ('twoFactorRequired' in result) {
-        setChallenge(result.challenge)
-        return
-      }
-      finishLogin(result.user)
+      handleLoginResponse(res)
     } catch (err) {
       setError((err as Error).message || 'Login failed')
     } finally {
@@ -131,14 +81,32 @@ export default function LoginPage() {
     }
   }
 
-  async function verify2fa(event: React.FormEvent) {
-    event.preventDefault()
+  async function chooseWorkspace(orgSlug: string) {
+    if (!wsChallenge) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await api<LoginResponse>('/auth/select-workspace', {
+        method: 'POST',
+        body: JSON.stringify({ challenge: wsChallenge, orgSlug }),
+      })
+      handleLoginResponse(res)
+    } catch (err) {
+      setError((err as Error).message || 'Could not open that workspace')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function verify2fa(e: React.FormEvent) {
+    e.preventDefault()
     if (!challenge) return
     setLoading(true)
     setError(null)
     try {
-      const result = await TwoFactor.verify(challenge, code.trim())
-      finishLogin(result.user as LoginUser)
+      const res = await TwoFactor.verify(challenge, code.trim())
+      window.localStorage.setItem('user', JSON.stringify(res.user))
+      routeByUser(res.user as LoginUser)
     } catch (err) {
       setError((err as Error).message || 'Invalid code')
     } finally {
@@ -146,15 +114,13 @@ export default function LoginPage() {
     }
   }
 
-  async function startSso(event: React.FormEvent) {
-    event.preventDefault()
+  async function startSso(e: React.FormEvent) {
+    e.preventDefault()
     if (!ssoSlug.trim()) return
     setLoading(true)
     setError(null)
     try {
-      const requested = new URLSearchParams(window.location.search).get('next')
-      const next = requested?.startsWith('/') && !requested.startsWith('//') ? requested : '/'
-      const { url } = await Sso.authorizeUrl(ssoSlug.trim().toLowerCase(), next)
+      const { url } = await Sso.authorizeUrl(ssoSlug.trim().toLowerCase(), window.location.origin)
       window.location.href = url
     } catch (err) {
       setError((err as Error).message || 'SSO is not available for that workspace')
@@ -162,108 +128,129 @@ export default function LoginPage() {
     }
   }
 
-  function switchMode(nextMode: SignInMode) {
-    setMode(nextMode)
-    setEmailChallenge(null)
-    setEmailCode('')
-    setChallenge(null)
-    setCode('')
-    setError(null)
-  }
-
-  const inputCls = 'w-full rounded-md border border-line px-2.5 py-2 text-sm outline-none focus:border-brand'
-
-  if (checkingSession) {
-    return (
-      <div className="grid min-h-screen place-items-center bg-gray-50">
-        <div className="text-center">
-          <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-line border-t-brand" />
-          <p className="mt-3 text-xs text-muted">Checking your session…</p>
-        </div>
-      </div>
-    )
-  }
+  const inputCls =
+    'w-full rounded-md border border-line px-2.5 py-1.5 text-sm outline-none focus:border-brand'
 
   return (
-    <div className="grid min-h-screen place-items-center bg-gray-50 px-4">
+    <div className="min-h-screen grid place-items-center bg-gray-50 px-4">
       <div className="w-full max-w-xs rounded-lg border border-line bg-white p-5 shadow-card">
-        <div className="mb-4 flex items-center gap-2">
+        <div className="flex items-center gap-2 mb-4">
           <div className="h-5 w-5 rounded-md bg-brand" aria-hidden />
-          <span className="text-sm font-semibold">Affiliate</span>
+          <span className="font-semibold text-sm">Affiliate</span>
         </div>
 
-        {challenge ? (
+        {wsChallenge ? (
+          <div>
+            <h1 className="text-base font-semibold">Choose a workspace</h1>
+            <p className="text-xs text-muted mb-4">
+              This email is used in more than one workspace. Pick the one to sign in to.
+            </p>
+            <ul className="mb-3 space-y-1.5">
+              {workspaces.map((w) => (
+                <li key={w.slug}>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => chooseWorkspace(w.slug)}
+                    className="w-full rounded-md border border-line px-2.5 py-2 text-left text-sm hover:bg-gray-50 disabled:opacity-60"
+                  >
+                    <span className="block font-medium">{w.name}</span>
+                    <span className="block text-2xs text-muted">{w.slug}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {error && <p className="text-xs text-danger mb-3">{error}</p>}
+            <button
+              type="button"
+              onClick={() => { setWsChallenge(null); setWorkspaces([]); setError(null) }}
+              className="mt-1 w-full text-2xs text-muted hover:text-ink"
+            >
+              Back to sign in
+            </button>
+          </div>
+        ) : challenge ? (
           <form onSubmit={verify2fa}>
             <h1 className="text-base font-semibold">Two-factor authentication</h1>
-            <p className="mb-4 text-xs text-muted">Enter the code from your authenticator app, or a recovery code.</p>
-            <input autoFocus inputMode="numeric" value={code} onChange={(event) => setCode(event.target.value)} placeholder="123456" className={`${inputCls} mb-4 text-center tracking-widest`} />
-            {error && <p className="mb-3 text-xs text-danger">{error}</p>}
-            <Button type="submit" disabled={loading} className="w-full justify-center py-1.5">{loading ? 'Verifying…' : 'Verify'}</Button>
-            <button type="button" onClick={() => switchMode('email')} className="mt-3 w-full text-2xs text-muted hover:text-ink">Back to email sign in</button>
-          </form>
-        ) : emailChallenge ? (
-          <form onSubmit={verifyEmailCode}>
-            <h1 className="text-base font-semibold">Check your email</h1>
-            <p className="mb-4 text-xs text-muted">Enter the 6-digit code sent to <strong className="text-ink">{sentTo}</strong>.</p>
-            <label className="mb-1 block text-xs text-muted">Sign-in code</label>
+            <p className="text-xs text-muted mb-4">
+              Enter the 6-digit code from your authenticator app, or a recovery code.
+            </p>
             <input
               autoFocus
-              required
               inputMode="numeric"
-              autoComplete="one-time-code"
-              maxLength={6}
-              value={emailCode}
-              onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-              placeholder="000000"
-              className={`${inputCls} mb-4 text-center text-lg tracking-[0.35em]`}
+              value={code}
+              onChange={(ev) => setCode(ev.target.value)}
+              placeholder="123456"
+              className={inputCls + ' mb-4 tracking-widest text-center'}
             />
-            {error && <p className="mb-3 text-xs text-danger">{error}</p>}
-            <Button type="submit" disabled={loading || emailCode.length !== 6} className="w-full justify-center py-1.5">{loading ? 'Verifying…' : 'Verify and sign in'}</Button>
-            <div className="mt-3 flex items-center justify-between text-2xs">
-              <button type="button" onClick={() => { setEmailChallenge(null); setError(null) }} className="text-muted hover:text-ink">Change email</button>
-              <button type="button" disabled={loading} onClick={sendEmailCode} className="text-brand disabled:opacity-50">Resend code</button>
-            </div>
+            {error && <p className="text-xs text-danger mb-3">{error}</p>}
+            <Button type="submit" disabled={loading} className="w-full justify-center py-1.5">
+              {loading ? 'Verifying\u2026' : 'Verify'}
+            </Button>
+            <button
+              type="button"
+              onClick={() => { setChallenge(null); setCode(''); setError(null) }}
+              className="mt-3 w-full text-2xs text-muted hover:text-ink"
+            >
+              Back to sign in
+            </button>
           </form>
-        ) : mode === 'sso' ? (
+        ) : showSso ? (
           <form onSubmit={startSso}>
             <h1 className="text-base font-semibold">Sign in with SSO</h1>
-            <p className="mb-4 text-xs text-muted">For organizations using an external identity provider.</p>
-            <label className="mb-1 block text-xs text-muted">Workspace ID</label>
-            <input autoFocus value={ssoSlug} onChange={(event) => setSsoSlug(event.target.value)} placeholder="workspace-name" className={`${inputCls} mb-4`} />
-            {error && <p className="mb-3 text-xs text-danger">{error}</p>}
-            <Button type="submit" disabled={loading} className="w-full justify-center py-1.5">{loading ? 'Redirecting…' : 'Continue with SSO'}</Button>
-            <button type="button" onClick={() => switchMode('email')} className="mt-3 w-full text-2xs text-muted hover:text-ink">Back to email sign in</button>
-          </form>
-        ) : mode === 'password' ? (
-          <form onSubmit={submitPassword}>
-            <h1 className="text-base font-semibold">Sign in with password</h1>
-            <p className="mb-4 text-xs text-muted">Use your existing account password.</p>
-            <label className="mb-1 block text-xs text-muted">Email</label>
-            <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className={`${inputCls} mb-3`} autoComplete="email" />
-            <label className="mb-1 block text-xs text-muted">Workspace <span className="text-2xs">(optional)</span></label>
-            <input value={workspace} onChange={(event) => setWorkspace(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} maxLength={50} className={`${inputCls} mb-3`} placeholder="Only for shared emails" />
-            <label className="mb-1 block text-xs text-muted">Password</label>
-            <input required type="password" maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} className={`${inputCls} mb-3`} autoComplete="current-password" />
-            <div className="mb-3 text-right"><Link href="/forgot-password" className="text-2xs text-brand hover:underline">Forgot password?</Link></div>
-            {error && <p className="mb-3 text-xs text-danger">{error}</p>}
-            <Button type="submit" disabled={loading} className="w-full justify-center py-1.5">{loading ? 'Signing in…' : 'Sign in'}</Button>
-            <button type="button" onClick={() => switchMode('email')} className="mt-3 w-full text-2xs text-muted hover:text-ink">Back to email code</button>
+            <p className="text-xs text-muted mb-4">Enter your workspace ID to continue to your identity provider.</p>
+            <label className="block text-xs text-muted mb-1">Workspace</label>
+            <input
+              autoFocus
+              value={ssoSlug}
+              onChange={(ev) => setSsoSlug(ev.target.value)}
+              placeholder="acme"
+              className={inputCls + ' mb-4'}
+            />
+            {error && <p className="text-xs text-danger mb-3">{error}</p>}
+            <Button type="submit" disabled={loading} className="w-full justify-center py-1.5">
+              {loading ? 'Redirecting\u2026' : 'Continue with SSO'}
+            </Button>
+            <button
+              type="button"
+              onClick={() => { setShowSso(false); setError(null) }}
+              className="mt-3 w-full text-2xs text-muted hover:text-ink"
+            >
+              Back to sign in
+            </button>
           </form>
         ) : (
-          <form onSubmit={sendEmailCode}>
-            <h1 className="text-base font-semibold">Sign in with email</h1>
-            <p className="mb-4 text-xs text-muted">We will email you a secure 6-digit sign-in code.</p>
-            <label className="mb-1 block text-xs text-muted">Email address</label>
-            <input required autoFocus type="email" value={email} onChange={(event) => setEmail(event.target.value)} className={`${inputCls} mb-4`} autoComplete="email" placeholder="you@example.com" />
-            {error && <p className="mb-3 text-xs text-danger">{error}</p>}
-            <Button type="submit" disabled={loading} className="w-full justify-center py-1.5">{loading ? 'Sending code…' : 'Email me a login code'}</Button>
-            <div className="mt-4 border-t border-line pt-3 text-center">
-              <p className="mb-2 text-2xs text-muted">Other sign-in options</p>
-              <div className="flex justify-center gap-3 text-2xs">
-                <button type="button" onClick={() => switchMode('password')} className="text-brand hover:underline">Use password</button>
-                <button type="button" onClick={() => switchMode('sso')} className="text-brand hover:underline">Enterprise SSO</button>
-              </div>
-            </div>
+          <form onSubmit={submit}>
+            <h1 className="text-base font-semibold">Sign in</h1>
+            <p className="text-xs text-muted mb-4">Welcome back</p>
+            <label className="block text-xs text-muted mb-1">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className={inputCls + ' mb-3'}
+            />
+            <label className="block text-xs text-muted mb-1">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className={inputCls + ' mb-4'}
+            />
+            {error && <p className="text-xs text-danger mb-3">{error}</p>}
+            <Button type="submit" disabled={loading} className="w-full justify-center py-1.5">
+              {loading ? 'Signing in\u2026' : 'Sign in'}
+            </Button>
+            <button
+              type="button"
+              onClick={() => { setShowSso(true); setError(null) }}
+              className="mt-2 w-full rounded-md border border-line py-1.5 text-sm hover:bg-gray-50"
+            >
+              Sign in with SSO
+            </button>
+            <p className="text-2xs text-muted mt-3 text-center">
+              Admin: admin@demo.test · Affiliate: affiliate@demo.test · password123
+            </p>
           </form>
         )}
       </div>

@@ -11,10 +11,6 @@ export class SignupSettingsDto {
   @IsBoolean()
   requireWebsite?: boolean
 
-  @IsOptional()
-  @IsBoolean()
-  allowAffiliateLinkCreation?: boolean
-
   // ---- Public sign-up page branding / customization ----
   @IsOptional()
   @IsString()

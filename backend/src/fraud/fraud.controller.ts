@@ -1,12 +1,10 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
-import { ArrayMaxSize, IsArray, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator'
+import { IsArray, IsInt, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator'
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard'
 import { PermissionsGuard } from '../common/guards/permissions.guard'
 import { RequirePermissions } from '../common/guards/permissions.decorator'
 import { JwtPayload } from '../auth/jwt.strategy'
 import { FraudService } from './fraud.service'
-import { FeatureGuard } from '../entitlements/feature.guard'
-import { RequireFeature } from '../entitlements/require-feature.decorator'
 
 class FraudSettingsDto {
   @IsOptional() @IsInt() @Min(0) @Max(100) reviewThreshold?: number
@@ -15,16 +13,15 @@ class FraudSettingsDto {
   @IsOptional() @IsInt() @Min(1) orderVelocityWindowHours?: number
   @IsOptional() @IsInt() @Min(1) ipVelocityLimit?: number
   @IsOptional() @IsInt() @Min(1) ipVelocityWindowMinutes?: number
-  @IsOptional() @IsArray() @ArrayMaxSize(500) @IsUUID('4', { each: true }) allowlistAffiliateIds?: string[]
+  @IsOptional() @IsArray() @IsString({ each: true }) allowlistAffiliateIds?: string[]
 }
 
 class ReviewActionDto {
-  @IsOptional() @IsString() @MaxLength(500) notes?: string
+  @IsOptional() @IsString() notes?: string
 }
 
 @Controller('fraud')
-@UseGuards(JwtAuthGuard, PermissionsGuard, FeatureGuard)
-@RequireFeature('fraudTools')
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class FraudController {
   constructor(private readonly fraud: FraudService) {}
 

@@ -1,100 +1,54 @@
 import { ForbiddenException, Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
-import { PayoutsService } from '../payouts/payouts.service'
-import { LinksService } from '../links/links.service'
-import { CreatePortalLinkDto } from './dto/portal-link.dto'
-import { EntitlementsService } from '../entitlements/entitlements.service'
+import { TaxService } from '../tax/tax.service'
 
 /** Affiliate self-service. All queries scoped to the affiliate on the JWT. */
 @Injectable()
 export class PortalService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly payoutsService: PayoutsService,
-    private readonly linksService: LinksService,
-    private readonly entitlements: EntitlementsService,
-  ) {}
+  constructor(private readonly prisma: PrismaService, private readonly tax: TaxService) {}
 
   private async requireAffiliate(affiliateId?: string | null) {
     if (!affiliateId) throw new ForbiddenException('This account is not linked to an affiliate')
     const affiliate = await this.prisma.affiliate.findUnique({ where: { id: affiliateId } })
     if (!affiliate) throw new ForbiddenException('Affiliate not found')
-    if (affiliate.status !== 'approved') throw new ForbiddenException('Affiliate portal access is not active')
     return affiliate
   }
 
   async summary(affiliateId?: string | null) {
     const a = await this.requireAffiliate(affiliateId)
-    const organization = await this.prisma.organization.findUniqueOrThrow({ where: { id: a.organizationId } })
-    const [clicks, conversions, earnedRows, pendingRows, balance] = await Promise.all([
+    const [clicks, conversions, earned, pending] = await Promise.all([
       this.prisma.click.count({ where: { affiliateId: a.id } }),
       this.prisma.conversion.count({ where: { affiliateId: a.id } }),
-      this.prisma.commission.findMany({
-        where: { affiliateId: a.id, status: { in: ['approved', 'payable', 'locked', 'paid'] } },
-        include: { adjustments: true },
+      this.prisma.commission.aggregate({
+        _sum: { amount: true },
+        where: { affiliateId: a.id, status: { in: ['approved', 'payable', 'paid'] } },
       }),
-      this.prisma.commission.findMany({
+      this.prisma.commission.aggregate({
+        _sum: { amount: true },
         where: { affiliateId: a.id, status: 'pending' },
-        include: { adjustments: true },
-      }),
-      this.prisma.affiliateBalance.findUnique({
-        where: {
-          affiliateId_currency: {
-            affiliateId: a.id,
-            currency: organization.defaultCurrency,
-          },
-        },
       }),
     ])
-    const net = (rows: typeof earnedRows) => rows.reduce(
-      (total, commission) => total + Number(commission.amount) + commission.adjustments.reduce((sum, adjustment) => sum + Number(adjustment.delta), 0),
-      0,
-    )
     return {
       affiliateCode: a.affiliateCode,
       referralSlug: a.referralSlug,
-      currency: organization.defaultCurrency,
-      lifetimeEarnings: Number(balance?.lifetime ?? 0),
-      availableBalance: Number(balance?.available ?? 0),
+      lifetimeEarnings: Number(a.lifetimeEarnings),
+      availableBalance: Number(a.availableBalance),
       clicks,
       conversions,
-      earned: net(earnedRows),
-      pending: net(pendingRows),
+      earned: Number(earned._sum.amount ?? 0),
+      pending: Number(pending._sum.amount ?? 0),
       conversionRate: clicks ? Math.round((conversions / clicks) * 1000) / 10 : 0,
     }
   }
 
   async links(affiliateId?: string | null) {
     const a = await this.requireAffiliate(affiliateId)
-    return this.linksService.listForAffiliate(a.organizationId, a.id)
-  }
-
-  async createLink(affiliateId: string | null | undefined, dto: CreatePortalLinkDto) {
-    const a = await this.requireAffiliate(affiliateId)
-    return this.linksService.createForAffiliate(a.organizationId, a.id, dto)
-  }
-
-  async deleteLink(affiliateId: string | null | undefined, id: string) {
-    const a = await this.requireAffiliate(affiliateId)
-    return this.linksService.removeForAffiliate(a.organizationId, a.id, id)
-  }
-
-  async coupons(affiliateId?: string | null) {
-    const a = await this.requireAffiliate(affiliateId)
-    return this.prisma.coupon.findMany({
+    const rows = await this.prisma.affiliateLink.findMany({
       where: { affiliateId: a.id },
-      select: {
-        id: true,
-        code: true,
-        discountType: true,
-        status: true,
-        expiresAt: true,
-        createdAt: true,
-        store: { select: { id: true, name: true, domain: true, platform: true } },
-        _count: { select: { orders: true } },
-      },
       orderBy: { createdAt: 'desc' },
     })
+    // clicksCount is BigInt — serialise to Number for JSON
+    return rows.map((r) => ({ ...r, clicksCount: Number(r.clicksCount) }))
   }
 
   async orders(affiliateId?: string | null) {
@@ -134,10 +88,13 @@ export class PortalService {
     })
   }
 
-  async addPayoutMethod(affiliateId?: string | null, method?: string, details?: Record<string, unknown>) {
+  async addPayoutMethod(affiliateId?: string | null, method?: string) {
     const a = await this.requireAffiliate(affiliateId)
     if (!method) throw new (await import('@nestjs/common')).BadRequestException('method required')
-    return this.payoutsService.addPayoutMethod(a.id, method, details)
+    return this.prisma.payoutMethodRecord.create({
+      data: { affiliateId: a.id, method: method as any, isDefault: false },
+      select: { id: true, method: true, isDefault: true },
+    })
   }
 
   async deletePayoutMethod(affiliateId?: string | null, recordId?: string) {
@@ -146,26 +103,44 @@ export class PortalService {
     return { deleted: true }
   }
 
-  async setDefaultPayoutMethod(affiliateId?: string | null, recordId?: string) {
-    const a = await this.requireAffiliate(affiliateId)
-    if (!recordId) throw new (await import('@nestjs/common')).BadRequestException('recordId required')
-    return this.payoutsService.setDefaultPayoutMethod(a.id, recordId)
-  }
-
-  async requestPayout(affiliateId?: string | null, method?: string, currency?: string) {
+  async requestPayout(affiliateId?: string | null, method?: string) {
     const a = await this.requireAffiliate(affiliateId)
     if (!method) throw new (await import('@nestjs/common')).BadRequestException('method required')
-    const limit = await this.entitlements.getLimit(a.organizationId, 'monthlyPayoutRequestsPerAffiliate')
-    if (limit >= 0) {
-      const now = new Date()
-      const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-      const used = await this.prisma.payout.count({
-        where: { affiliateId: a.id, createdAt: { gte: monthStart } },
+    await this.tax.assertPayoutAllowed(a.organizationId, a.id)
+    const { BadRequestException } = await import('@nestjs/common')
+    // Rule 5 hardening: run selection + claim inside one transaction and claim
+    // each commission with a guarded updateMany (payoutItemId still null). If a
+    // concurrent requestPayout already grabbed a commission the guard matches 0
+    // rows and we throw, rolling back the whole payout so the same earnings can
+    // never be paid out twice (TOCTOU / double-claim protection).
+    return this.prisma.$transaction(async (tx) => {
+      const commissions = await tx.commission.findMany({
+        where: { affiliateId: a.id, status: 'payable', payoutItemId: null },
       })
-      if (used >= limit) {
-        throw new ForbiddenException(`Your plan allows ${limit} payout request(s) per affiliate each month`)
+      if (commissions.length === 0)
+        throw new BadRequestException('No payable commissions available')
+      const total = commissions.reduce((s, c) => s + Number(c.amount), 0)
+      const payout = await tx.payout.create({
+        data: {
+          organizationId: a.organizationId,
+          affiliateId: a.id,
+          amount: total,
+          currency: 'USD',
+          method: method as any,
+          status: 'requested',
+          items: { create: commissions.map((c) => ({ amount: c.amount })) },
+        },
+        include: { items: true },
+      })
+      for (let i = 0; i < commissions.length; i++) {
+        const claimed = await tx.commission.updateMany({
+          where: { id: commissions[i].id, payoutItemId: null },
+          data: { payoutItemId: payout.items[i].id },
+        })
+        if (claimed.count === 0)
+          throw new BadRequestException('Payout already in progress — please retry')
       }
-    }
-    return this.payoutsService.requestPayout(a.id, a.organizationId, method, currency)
+      return { id: payout.id, amount: total, currency: 'USD', status: 'requested' }
+    })
   }
 }

@@ -52,10 +52,8 @@ export class TrackingService {
    * The caller sets the attribution cookie (aff_ref) to the affiliate code.
    */
   async recordClick(shortCode: string, meta: ClickMeta) {
-    const normalizedShortCode = shortCode.trim()
-    if (!/^[A-Za-z0-9_-]{2,128}$/.test(normalizedShortCode)) return null
     const link = await this.prisma.affiliateLink.findUnique({
-      where: { shortCode: normalizedShortCode },
+      where: { shortCode },
       include: { affiliate: true },
     })
     if (!link) return null
@@ -105,38 +103,14 @@ export class TrackingService {
     referralCode: string,
     meta: ClickMeta,
   ) {
-    const normalizedReferral = referralCode.trim()
-    if (normalizedReferral.length < 1 || normalizedReferral.length > 64) return null
-    const where = {
-      status: 'approved' as const,
-      ...(organizationId ? { organizationId } : {}),
-      OR: [
-        { affiliateCode: normalizedReferral.toUpperCase() },
-        { referralSlug: normalizedReferral.toLowerCase() },
-      ],
-    }
-
-    // Affiliate codes are unique inside a tenant, not globally. A public pixel
-    // without `org` must never silently select the first of two tenant matches.
-    // Keep the backwards-compatible no-org form only when the match is globally
-    // unambiguous; otherwise the caller must include its organization id.
-    let affiliate
-    if (organizationId) {
-      affiliate = await this.prisma.affiliate.findFirst({ where })
-    } else {
-      const matches = await this.prisma.affiliate.findMany({ where, take: 2 })
-      if (matches.length !== 1) return null
-      affiliate = matches[0]
-    }
+    const affiliate = await this.prisma.affiliate.findFirst({
+      where: {
+        status: 'approved',
+        ...(organizationId ? { organizationId } : {}),
+        OR: [{ affiliateCode: referralCode }, { referralSlug: referralCode }],
+      },
+    })
     if (!affiliate) return null
-
-    return this.createPixelClick(affiliate, meta)
-  }
-
-  private async createPixelClick(
-    affiliate: { id: string; affiliateCode: string },
-    meta: ClickMeta,
-  ) {
 
     const utm = meta.utm
       ? Object.fromEntries(Object.entries(meta.utm).filter(([, v]) => v != null && v !== ''))

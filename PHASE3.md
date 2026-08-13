@@ -32,13 +32,11 @@ Whole UI tightened per request: **smaller fonts, smaller gaps, much less spacing
 - **Affiliate portal** (`/portal`): own compact shell — Overview (balance, pending, lifetime, conversion rate), My links, Orders, Earnings.
 - Fixed login to read `access_token`; stores user and routes admins vs affiliates.
 
-### Historical Phase 3 demo data
+### Seed demo data
 
-Earlier development builds inserted 12 days of demo orders and shared-password
-accounts. The v5 production-safe seed intentionally no longer creates them.
+12 days of orders + clicks + conversions + commissions (mixed statuses) so dashboards/portal show real numbers.
 
-- Create or reset the administrator with `npm run admin:ensure` and process-scoped
-  `ADMIN_EMAIL` / `ADMIN_PASSWORD` values.
-- Create affiliate portal users through the application approval flow.
+- Admin: `admin@demo.test` / `password123`
+- Affiliate portal: `affiliate@demo.test` / `password123`
 
 ## Next: Phase 4 — Payouts (all methods)

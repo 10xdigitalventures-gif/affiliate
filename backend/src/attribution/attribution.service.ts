@@ -247,21 +247,15 @@ export class AttributionService {
     since: Date,
   ): Promise<boolean> {
     if (input.clickId) {
-      const c = await this.prisma.click.findFirst({
-        where: { id: input.clickId, affiliate: { organizationId } },
-      })
+      const c = await this.prisma.click.findUnique({ where: { id: input.clickId } })
       if (c && c.affiliateId === affiliateId && c.occurredAt >= since) return true
     }
     if (input.referralCode) {
-      const referral = input.referralCode.trim()
       const aff = await this.prisma.affiliate.findFirst({
         where: {
           id: affiliateId,
           organizationId,
-          OR: [
-            { affiliateCode: referral.toUpperCase() },
-            { referralSlug: referral.toLowerCase() },
-          ],
+          OR: [{ affiliateCode: input.referralCode }, { referralSlug: input.referralCode }],
         },
       })
       if (aff) return true
@@ -284,16 +278,11 @@ export class AttributionService {
     // Resolve seed affiliate from referral cookie when present
     let seedAffiliateId: string | null = null
     if (input.referralCode) {
-      const referral = input.referralCode.trim()
-      if (referral.length < 1 || referral.length > 64) return null
       const affiliate = await this.prisma.affiliate.findFirst({
         where: {
           organizationId,
           status: 'approved',
-          OR: [
-            { affiliateCode: referral.toUpperCase() },
-            { referralSlug: referral.toLowerCase() },
-          ],
+          OR: [{ affiliateCode: input.referralCode }, { referralSlug: input.referralCode }],
         },
       })
       if (!affiliate) return null
@@ -340,9 +329,7 @@ export class AttributionService {
     // Prefer explicit click → its ipHash; else input ipHash; else last click of seed affiliate
     let sessionIp: string | null = ipHash ?? null
     if (clickId) {
-      const c = await this.prisma.click.findFirst({
-        where: { id: clickId, affiliate: { organizationId } },
-      })
+      const c = await this.prisma.click.findUnique({ where: { id: clickId } })
       if (c && c.occurredAt >= since) {
         sessionIp = c.ipHash ?? sessionIp
       }
@@ -350,11 +337,7 @@ export class AttributionService {
 
     if (!sessionIp && seedAffiliateId) {
       const last = await this.prisma.click.findFirst({
-        where: {
-          affiliateId: seedAffiliateId,
-          occurredAt: { gte: since },
-          affiliate: { organizationId },
-        },
+        where: { affiliateId: seedAffiliateId, occurredAt: { gte: since } },
         orderBy: { occurredAt: 'desc' },
       })
       sessionIp = last?.ipHash ?? null
@@ -398,11 +381,7 @@ export class AttributionService {
     // But if path empty and we have seed, fall back
     if (path.length === 0 && seedAffiliateId) {
       const last = await this.prisma.click.findFirst({
-        where: {
-          affiliateId: seedAffiliateId,
-          occurredAt: { gte: since },
-          affiliate: { organizationId },
-        },
+        where: { affiliateId: seedAffiliateId, occurredAt: { gte: since } },
         orderBy: { occurredAt: 'desc' },
       })
       if (last) path.push({ affiliateId: seedAffiliateId, clickId: last.id, occurredAt: last.occurredAt })

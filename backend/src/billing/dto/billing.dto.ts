@@ -1,4 +1,3 @@
-import { Transform } from 'class-transformer'
 import {
   IsBoolean,
   IsIn,
@@ -7,12 +6,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
-  IsUUID,
-  IsUrl,
-  Length,
   Max,
-  MaxLength,
-  Matches,
   Min,
 } from 'class-validator'
 
@@ -27,20 +21,20 @@ export class UpsertGatewayConfigDto {
   @IsOptional() @IsIn(['platform', 'tenant'])
   scope?: 'platform' | 'tenant'
 
-  @IsOptional() @IsUUID()
+  @IsOptional() @IsString()
   organizationId?: string
 
-  @IsOptional() @IsString() @MaxLength(120)
+  @IsOptional() @IsString()
   label?: string
 
-  @IsOptional() @IsString() @MaxLength(200)
+  @IsOptional() @IsString()
   companyId?: string
 
   /** Plaintext secrets; encrypted at rest. Omit on update to keep existing. */
-  @IsOptional() @IsString() @MaxLength(4096)
+  @IsOptional() @IsString()
   apiKey?: string
 
-  @IsOptional() @IsString() @MaxLength(4096)
+  @IsOptional() @IsString()
   webhookSecret?: string
 
   @IsOptional() @IsBoolean()
@@ -59,7 +53,7 @@ export class UpsertGatewayConfigDto {
   @IsOptional() @IsNumber() @Min(0) @Max(100)
   taxPercent?: number
 
-  @IsOptional() @IsString() @MaxLength(80)
+  @IsOptional() @IsString()
   taxLabel?: string
 
   @IsOptional() @IsBoolean()
@@ -68,29 +62,25 @@ export class UpsertGatewayConfigDto {
 
 /** Begin a save-card / setup flow for a tenant. */
 export class StartSetupDto {
-  @IsOptional() @IsUUID()
+  @IsOptional() @IsString()
   configId?: string
 
   @IsOptional() @IsIn(PROVIDERS)
   provider?: ProviderName
 
-  @IsOptional()
-  @IsUrl({ require_tld: false, protocols: ['http', 'https'], require_protocol: true })
-  @MaxLength(2048)
+  @IsOptional() @IsString()
   returnUrl?: string
 }
 
 /** Charge a tenant's saved card off-session. */
 export class ChargeTenantDto {
-  @IsInt() @Min(1) @Max(1_000_000_000_00)
+  @IsInt() @Min(1)
   amountCents!: number
 
-  @IsOptional()
-  @Transform(({ value }) => typeof value === 'string' ? value.trim().toUpperCase() : value)
-  @IsString() @Length(3, 3) @Matches(/^[A-Z]{3}$/)
+  @IsOptional() @IsString()
   currency?: string
 
-  @IsOptional() @IsString() @MaxLength(500)
+  @IsOptional() @IsString()
   description?: string
 
   @IsOptional() @IsBoolean()
@@ -102,40 +92,36 @@ export class ChargeTenantDto {
 
 /** Start a subscription for a tenant on a plan, applying the plan's trial. */
 export class StartSubscriptionDto {
-  @IsUUID()
+  @IsString()
   planId!: string
 
-  @IsOptional() @IsInt() @Min(0) @Max(365)
+  @IsOptional() @IsInt() @Min(0)
   trialDaysOverride?: number
 
-  @IsOptional() @IsUUID()
+  @IsOptional() @IsString()
   configId?: string
 
-  @IsOptional()
-  @IsUrl({ require_tld: false, protocols: ['http', 'https'], require_protocol: true })
-  @MaxLength(2048)
+  @IsOptional() @IsString()
   returnUrl?: string
 }
 
 /** Send a payout / disbursement through a gateway that supports it. */
 export class CreatePayoutDto {
-  @IsUUID()
+  @IsString()
   configId!: string
 
-  @IsInt() @Min(1) @Max(1_000_000_000_00)
+  @IsInt() @Min(1)
   amountCents!: number
 
-  @IsOptional()
-  @Transform(({ value }) => typeof value === 'string' ? value.trim().toUpperCase() : value)
-  @IsString() @Length(3, 3) @Matches(/^[A-Z]{3}$/)
+  @IsOptional() @IsString()
   currency?: string
 
   @IsObject()
   destination!: Record<string, unknown>
 
-  @IsOptional() @IsString() @MaxLength(200)
+  @IsOptional() @IsString()
   reference?: string
 
-  @IsOptional() @IsString() @MaxLength(200)
+  @IsOptional() @IsString()
   purpose?: string
 }

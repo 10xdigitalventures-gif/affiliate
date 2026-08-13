@@ -5,7 +5,6 @@ import { PrismaService } from '../prisma/prisma.service'
 import { AuditService } from '../audit/audit.service'
 import { MailService } from '../mail/mail.service'
 import { NotificationsService } from '../notifications/notifications.service'
-import { EntitlementsService } from '../entitlements/entitlements.service'
 
 const D = (n: number | string) => new Prisma.Decimal(n)
 const order = { id: 'order-1', storeId: 'store-1', subtotal: D(100), total: D(110), currency: 'USD' }
@@ -26,7 +25,6 @@ describe('CommissionsService product/category overrides', () => {
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         { provide: MailService, useValue: { send: jest.fn().mockResolvedValue(undefined) } },
         { provide: NotificationsService, useValue: { notifyUser: jest.fn().mockResolvedValue(null), notifyOrgAdmins: jest.fn().mockResolvedValue(0) } },
-        { provide: EntitlementsService, useValue: { can: jest.fn().mockResolvedValue(true) } },
       ],
     }).compile()
     service = moduleRef.get(CommissionsService)

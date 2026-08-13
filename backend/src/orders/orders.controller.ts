@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth, ApiSecurity, ApiOperation } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard'
 import { PermissionsGuard } from '../common/guards/permissions.guard'
@@ -13,11 +13,11 @@ import { JwtPayload } from '../auth/jwt.strategy'
 @ApiTags('orders')
 @ApiBearerAuth('jwt')
 @Controller('orders')
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class OrdersController {
   constructor(private readonly orders: OrdersService) {}
 
   @Get()
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('orders.read')
   list(@Req() req: { user: JwtPayload }, @Query('skip') skip?: string, @Query('take') take?: string) {
     return this.orders.list(req.user.organizationId, {
@@ -28,7 +28,6 @@ export class OrdersController {
 
   // Manual / normalised ingest (JWT auth). Phase 2 webhooks map platform payloads to this DTO.
   @Post('ingest')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('orders.write')
   ingest(@Req() req: { user: JwtPayload }, @Body() dto: IngestOrderDto) {
     return this.orders.ingest(req.user.organizationId, dto)
@@ -44,13 +43,12 @@ export class OrdersController {
   @UseGuards(ApiKeyGuard)
   ingestWithApiKey(@Req() req: { user: { organizationId: string; scopes: string[] } }, @Body() dto: IngestOrderDto) {
     if (!req.user.scopes.includes('orders.write')) {
-      throw new ForbiddenException('API key missing orders.write scope')
+      throw new (require('@nestjs/common').ForbiddenException)('API key missing orders.write scope')
     }
     return this.orders.ingest(req.user.organizationId, dto)
   }
 
   @Post(':id/refund')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('commissions.write')
   refund(@Req() req: { user: JwtPayload }, @Param('id') id: string, @Body() dto: RefundOrderDto) {
     return this.orders.refund(req.user.organizationId, id, dto.refundAmount)
@@ -67,7 +65,7 @@ export class OrdersController {
   @UseGuards(ApiKeyGuard)
   refundWithApiKey(@Req() req: { user: { organizationId: string; scopes: string[] } }, @Body() dto: ApiRefundDto) {
     if (!req.user.scopes.includes('orders.write')) {
-      throw new ForbiddenException('API key missing orders.write scope')
+      throw new (require('@nestjs/common').ForbiddenException)('API key missing orders.write scope')
     }
     return this.orders.refundByExternal(req.user.organizationId, dto.storeId, dto.externalOrderId, dto.refundAmount)
   }

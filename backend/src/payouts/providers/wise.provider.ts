@@ -25,11 +25,7 @@ export class WisePayoutProvider implements PayoutProvider {
   }
 
   private base() {
-    const base = (process.env.WISE_API_BASE || 'https://api.wise.com').replace(/\/$/, '')
-    if (process.env.NODE_ENV === 'production' && !base.startsWith('https://')) {
-      throw new Error('WISE_API_BASE must use HTTPS in production')
-    }
-    return base
+    return process.env.WISE_API_BASE || 'https://api.wise.com'
   }
 
   private headers() {
@@ -59,10 +55,9 @@ export class WisePayoutProvider implements PayoutProvider {
           targetAmount: input.amount,
           payOut: 'BALANCE',
         }),
-        signal: AbortSignal.timeout(providerTimeoutMs()),
       })
-      if (!quoteRes.ok) throw new Error(`Wise quote failed with HTTP ${quoteRes.status}`)
-      const quote: any = await boundedJson(quoteRes, 'Wise quote')
+      if (!quoteRes.ok) throw new Error(`quote failed: ${quoteRes.status} ${await quoteRes.text()}`)
+      const quote: any = await quoteRes.json()
 
       // 2) Transfer (customerTransactionId = idempotency key)
       const transferRes = await fetch(`${this.base()}/v1/transfers`, {
@@ -74,20 +69,18 @@ export class WisePayoutProvider implements PayoutProvider {
           customerTransactionId: `payout_${input.payoutId}`,
           details: { reference: (input.memo ?? 'Payout').slice(0, 12) },
         }),
-        signal: AbortSignal.timeout(providerTimeoutMs()),
       })
-      if (!transferRes.ok) throw new Error(`Wise transfer failed with HTTP ${transferRes.status}`)
-      const transfer: any = await boundedJson(transferRes, 'Wise transfer')
+      if (!transferRes.ok) throw new Error(`transfer failed: ${transferRes.status} ${await transferRes.text()}`)
+      const transfer: any = await transferRes.json()
 
       // 3) Fund from balance
       const fundRes = await fetch(`${this.base()}/v3/profiles/${profileId}/transfers/${transfer.id}/payments`, {
         method: 'POST',
         headers: this.headers(),
         body: JSON.stringify({ type: 'BALANCE' }),
-        signal: AbortSignal.timeout(providerTimeoutMs()),
       })
-      if (!fundRes.ok) throw new Error(`Wise funding failed with HTTP ${fundRes.status}`)
-      const funded: any = await boundedJson(fundRes, 'Wise funding')
+      if (!fundRes.ok) throw new Error(`funding failed: ${fundRes.status} ${await fundRes.text()}`)
+      const funded: any = await fundRes.json()
 
       // Wise settles asynchronously; treat as processing unless already outgoing.
       const status = funded?.status === 'COMPLETED' ? 'paid' : 'processing'
@@ -97,15 +90,4 @@ export class WisePayoutProvider implements PayoutProvider {
       return { reference: null, status: 'failed', error: err?.message ?? 'Wise error' }
     }
   }
-}
-
-function providerTimeoutMs() {
-  return Math.min(Math.max(Number(process.env.PAYOUT_HTTP_TIMEOUT_MS) || 20_000, 1_000), 60_000)
-}
-
-async function boundedJson(response: Response, label: string): Promise<any> {
-  const text = await response.text()
-  if (Buffer.byteLength(text, 'utf8') > 1_048_576) throw new Error(`${label} response was too large`)
-  try { return JSON.parse(text) }
-  catch { throw new Error(`${label} returned invalid JSON`) }
 }

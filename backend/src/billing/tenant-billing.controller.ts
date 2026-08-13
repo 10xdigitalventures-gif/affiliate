@@ -5,7 +5,6 @@ import { RequirePermissions } from '../common/guards/permissions.decorator'
 import { JwtPayload } from '../auth/jwt.strategy'
 import { BillingService } from './billing.service'
 import { CreatePayoutDto, UpsertGatewayConfigDto } from './dto/billing.dto'
-import { AuditService } from '../audit/audit.service'
 
 /**
  * Tenant-facing payment gateways. A merchant configures and uses their OWN
@@ -18,18 +17,7 @@ import { AuditService } from '../audit/audit.service'
 @Controller('tenant-billing')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class TenantBillingController {
-  constructor(private readonly svc: BillingService, private readonly audit: AuditService) {}
-
-  private record(actor: JwtPayload, action: string, resourceId?: string, newValue?: unknown) {
-    return this.audit.log({
-      organizationId: actor.organizationId,
-      userId: actor.sub,
-      action,
-      resourceType: 'PaymentGatewayConfig',
-      resourceId,
-      newValue,
-    })
-  }
+  constructor(private readonly svc: BillingService) {}
 
   @Get('config')
   @RequirePermissions('billing.read')
@@ -39,10 +27,8 @@ export class TenantBillingController {
 
   @Post('config')
   @RequirePermissions('billing.write')
-  async create(@Req() req: { user: JwtPayload }, @Body() dto: UpsertGatewayConfigDto) {
-    const result = await this.svc.createTenantConfig(req.user.organizationId, dto)
-    await this.record(req.user, 'billing.gateway_created', result.id, { provider: result.provider })
-    return result
+  create(@Req() req: { user: JwtPayload }, @Body() dto: UpsertGatewayConfigDto) {
+    return this.svc.createTenantConfig(req.user.organizationId, dto)
   }
 
   @Get('config/:id')
@@ -53,30 +39,20 @@ export class TenantBillingController {
 
   @Patch('config/:id')
   @RequirePermissions('billing.write')
-  async update(@Req() req: { user: JwtPayload }, @Param('id') id: string, @Body() dto: UpsertGatewayConfigDto) {
-    const result = await this.svc.updateTenantConfig(req.user.organizationId, id, dto)
-    await this.record(req.user, 'billing.gateway_updated', id, {
-      provider: result.provider, isActive: result.isActive, isLive: result.isLive, isDefault: result.isDefault,
-    })
-    return result
+  update(@Req() req: { user: JwtPayload }, @Param('id') id: string, @Body() dto: UpsertGatewayConfigDto) {
+    return this.svc.updateTenantConfig(req.user.organizationId, id, dto)
   }
 
   @Delete('config/:id')
   @RequirePermissions('billing.write')
-  async remove(@Req() req: { user: JwtPayload }, @Param('id') id: string) {
-    const result = await this.svc.deleteTenantConfig(req.user.organizationId, id)
-    await this.record(req.user, 'billing.gateway_deleted', id)
-    return result
+  remove(@Req() req: { user: JwtPayload }, @Param('id') id: string) {
+    return this.svc.deleteTenantConfig(req.user.organizationId, id)
   }
 
   /** Send an affiliate payout through the tenant's own gateway (e.g. Swich). */
   @Post('payouts')
   @RequirePermissions('billing.write')
-  async payout(@Req() req: { user: JwtPayload }, @Body() dto: CreatePayoutDto) {
-    const result = await this.svc.createTenantPayout(req.user.organizationId, dto)
-    await this.record(req.user, 'billing.external_payout_created', dto.configId, {
-      amountCents: dto.amountCents, currency: dto.currency, reference: dto.reference,
-    })
-    return result
+  payout(@Req() req: { user: JwtPayload }, @Body() dto: CreatePayoutDto) {
+    return this.svc.createTenantPayout(req.user.organizationId, dto)
   }
 }

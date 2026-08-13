@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger'
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard'
 import { PermissionsGuard } from '../common/guards/permissions.guard'
@@ -56,12 +56,6 @@ export class CouponsController {
   @RequirePermissions('affiliates.write')
   update(@Req() req: { user: JwtPayload }, @Param('id') id: string, @Body() dto: UpdateCouponDto) {
     return this.coupons.update(req.user.organizationId, id, dto)
-  }
-
-  @Delete(':id')
-  @RequirePermissions('affiliates.write')
-  remove(@Req() req: { user: JwtPayload }, @Param('id') id: string) {
-    return this.coupons.remove(req.user.organizationId, id)
   }
 
   @Post(':id/assign/:affiliateId')

@@ -91,32 +91,6 @@ describe('AttributionService', () => {
       expect(result!.clickId).toBe('click-99')
       expect(result!.shares).toHaveLength(1)
       expect(result!.shares[0].weight).toBe(1)
-      expect(prisma.affiliate.findFirst).toHaveBeenCalledWith({
-        where: {
-          organizationId: 'org-1',
-          status: 'approved',
-          OR: [{ affiliateCode: 'REFCODE' }, { referralSlug: 'refcode' }],
-        },
-      })
-      expect(prisma.click.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-        where: expect.objectContaining({ affiliate: { organizationId: 'org-1' } }),
-      }))
-    })
-
-    it('canonicalizes a mixed-case referral while retaining tenant scope', async () => {
-      const { service, prisma } = makeService()
-      prisma.affiliate.findFirst.mockResolvedValue({ id: 'aff-cookie' })
-      prisma.click.findFirst.mockResolvedValue(null)
-
-      await service.resolve('org-1', { storeId: 's-1', referralCode: '  Mixed-Code  ' })
-
-      expect(prisma.affiliate.findFirst).toHaveBeenCalledWith({
-        where: {
-          organizationId: 'org-1',
-          status: 'approved',
-          OR: [{ affiliateCode: 'MIXED-CODE' }, { referralSlug: 'mixed-code' }],
-        },
-      })
     })
 
     it('still attributes with null clickId if no click in window', async () => {

@@ -2,17 +2,7 @@
 
 export function buildCsv(header: string[], rows: (string | number | null | undefined)[][]): string {
   const esc = (v: string | number | null | undefined) => {
-    let s = String(v ?? '')
-    // Spreadsheet applications execute cells beginning with =, +, - or @.
-    // Neutralize user-controlled formula payloads while preserving ordinary
-    // numeric values (including legitimate negative amounts) as numbers.
-    if (
-      typeof v === 'string' &&
-      /^\s*[=+\-@]/.test(s) &&
-      !/^\s*[+\-]?\d+(?:\.\d+)?\s*$/.test(s)
-    ) {
-      s = `'${s}`
-    }
+    const s = String(v ?? '')
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
   return [header.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')

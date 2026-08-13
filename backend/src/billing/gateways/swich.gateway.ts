@@ -51,52 +51,24 @@ export class SwichGateway implements PaymentGateway {
   private readonly sigHeader = (process.env.SWICH_SIGNATURE_HEADER || 'x-swich-signature').toLowerCase()
 
   constructor(private readonly creds: GatewayCredentials) {
-    this.baseUrl = (creds.baseUrl || process.env.SWICH_BASE_URL || '').replace(/\/+$/, '')
+    const fallback = creds.isLive
+      ? 'https://api.swichnow.io/v1'
+      : 'https://sandbox.swichnow.io/v1'
+    this.baseUrl = (creds.baseUrl || process.env.SWICH_BASE_URL || fallback).replace(/\/+$/, '')
   }
 
-  private assertVerified() {
-    if (process.env.SWICH_INTEGRATION_VERIFIED !== 'true') {
-      throw new GatewayError(
-        'Swich integration is disabled until merchant-specific endpoints and payloads are verified; set SWICH_INTEGRATION_VERIFIED=true only after certification',
-        'swich',
-        503,
-      )
-    }
-    if (!/^https:\/\//i.test(this.baseUrl)) {
-      throw new GatewayError('SWICH_BASE_URL must be an approved HTTPS API endpoint', 'swich', 500)
-    }
-    const required = [
-      'SWICH_PATH_PAYMENTS',
-      'SWICH_PATH_PAYMENT_LINKS',
-      'SWICH_PATH_INVOICES',
-      'SWICH_PATH_PAYOUTS',
-      'SWICH_PATH_PAYMENT_METHODS',
-    ]
-    const missing = required.filter((key) => !process.env[key])
-    if (missing.length) throw new GatewayError(`Missing verified Swich settings: ${missing.join(', ')}`, 'swich', 500)
-  }
-
-  private async req<T = any>(method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
-    this.assertVerified()
+  private async req<T = any>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.creds.apiKey) throw new GatewayError('Swich API key not configured', 'swich')
-    let res: Response
-    try {
-      res = await fetch(`${this.baseUrl}${path}`, {
-        method,
-        redirect: 'error',
-        signal: AbortSignal.timeout(gatewayTimeoutMs()),
-        headers: {
-          Authorization: `Bearer ${this.creds.apiKey}`,
-          'X-Company-Id': this.creds.companyId ?? '',
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      })
-    } catch {
-      throw new GatewayError(`Swich ${method} ${path} timed out or could not be reached`, 'swich', 503)
-    }
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${this.creds.apiKey}`,
+        'X-Company-Id': this.creds.companyId ?? '',
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
     const text = await res.text()
     const json = text ? safeJson(text) : {}
     if (!res.ok) {
@@ -166,7 +138,7 @@ export class SwichGateway implements PaymentGateway {
         amount: round2(li.amountCents / 100),
         quantity: li.quantity ?? 1,
       })),
-    }, input.idempotencyKey)
+    })
     return {
       id: inv.id ?? inv.invoice_id ?? '',
       number: inv.number ?? inv.invoice_number ?? null,
@@ -180,7 +152,6 @@ export class SwichGateway implements PaymentGateway {
 
   // HMAC-SHA256 hex of the raw body with the shared webhook secret.
   verifyAndParseWebhook(req: WebhookRequest): NormalizedEvent {
-    this.assertVerified()
     const secret = this.creds.webhookSecret
     if (!secret) throw new GatewayError('Swich webhook secret not configured', 'swich')
     const provided = header(req.headers, this.sigHeader)
@@ -188,7 +159,7 @@ export class SwichGateway implements PaymentGateway {
     const expected = createHmac('sha256', secret).update(req.rawBody).digest('hex')
     const cleaned = provided.replace(/^sha256=/, '')
     if (!safeEqual(cleaned, expected)) throw new GatewayError('Swich webhook signature mismatch', 'swich', 401)
-    const evt = strictJson(req.rawBody)
+    const evt = safeJson(req.rawBody)
     return {
       id: evt.id ?? evt.event_id ?? header(req.headers, 'x-swich-event-id') ?? '',
       type: evt.type ?? evt.event ?? 'unknown',
@@ -236,16 +207,4 @@ function safeEqual(a: string, b: string): boolean {
   const bb = Buffer.from(b)
   if (ab.length !== bb.length) return false
   return timingSafeEqual(ab, bb)
-}
-function strictJson(text: string): any {
-  try {
-    const parsed = JSON.parse(text)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid')
-    return parsed
-  } catch {
-    throw new GatewayError('Swich webhook body is not valid JSON', 'swich', 400)
-  }
-}
-function gatewayTimeoutMs(): number {
-  return Math.min(Math.max(Number(process.env.GATEWAY_HTTP_TIMEOUT_MS) || 15_000, 1_000), 30_000)
 }

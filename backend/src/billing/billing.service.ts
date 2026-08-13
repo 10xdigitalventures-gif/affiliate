@@ -1,10 +1,9 @@
-import { BadRequestException, HttpException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common'
-import { randomUUID } from 'crypto'
-import { Prisma, type PaymentGatewayConfig } from '@prisma/client'
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common'
+import type { PaymentGatewayConfig } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { CryptoService } from '../common/crypto/crypto.service'
 import { GatewayFactory } from './gateways/gateway.factory'
-import { GatewayError, LineItem, NormalizedEvent, ProviderName } from './gateways/gateway.types'
+import { LineItem, NormalizedEvent, ProviderName } from './gateways/gateway.types'
 import {
   ChargeTenantDto,
   CreatePayoutDto,
@@ -130,10 +129,8 @@ export class BillingService {
   /** Send an affiliate / client payout through one of the tenant's own gateways. */
   async createTenantPayout(organizationId: string, dto: CreatePayoutDto) {
     const config = await this.getTenantConfigRow(organizationId, dto.configId)
-    this.assertUsableConfig(config, 'tenant')
     const gateway = this.factory.build(config)
     if (!gateway.supportsPayouts()) throw new BadRequestException(`${config.provider} does not support payouts`)
-    this.assertPayoutDestination(dto.destination)
     return gateway.createPayout({
       amountCents: dto.amountCents,
       currency: (dto.currency || 'PKR').toUpperCase(),
@@ -151,7 +148,7 @@ export class BillingService {
 
   /** The webhook URL a merchant pastes into the Whop / Swich dashboard. */
   webhookUrl(configId: string, provider: ProviderName): string {
-    const base = (process.env.APP_PUBLIC_URL || 'https://affiliate.mentoringhub.online').replace(/\/+$/, '')
+    const base = (process.env.APP_PUBLIC_URL || process.env.API_PUBLIC_URL || 'http://localhost:4000').replace(/\/+$/, '')
     const prefix = process.env.API_PREFIX || 'v1'
     return `${base}/${prefix}/billing/webhooks/${provider}/${configId}`
   }
@@ -164,7 +161,7 @@ export class BillingService {
     const session = await gateway.createSetupSession({
       email: org.email ?? undefined,
       name: org.name,
-      returnUrl: this.validatedReturnUrl(dto.returnUrl),
+      returnUrl: dto.returnUrl ?? undefined,
       metadata: { organizationId, configId: config.id },
     })
     // Ensure a BillingCustomer shell exists to attach the card later (via webhook).
@@ -177,11 +174,7 @@ export class BillingService {
   }
 
   // ── Off-session charge (+ tax) with hosted invoice/receipt ──────────────────
-  async chargeTenant(
-    organizationId: string,
-    dto: ChargeTenantDto,
-    cycle?: { idempotencyKey: string; periodStart: Date; periodEnd: Date },
-  ) {
+  async chargeTenant(organizationId: string, dto: ChargeTenantDto) {
     const org = await this.getOrg(organizationId)
     const { config, customer } = await this.requireCustomer(organizationId)
     const gateway = this.factory.build(config)
@@ -192,45 +185,14 @@ export class BillingService {
     const total = subtotal + tax
     const lineItems = this.buildLineItems(dto.description ?? 'Subscription charge', subtotal, tax, config)
 
-    // A billing-cycle invoice has a deterministic unique key. If the worker
-    // crashes after the provider accepted a request, the same local invoice
-    // and provider Idempotency-Key are reused instead of charging twice.
-    let invoice = cycle
-      ? await this.prisma.billingInvoice.findUnique({ where: { idempotencyKey: cycle.idempotencyKey } })
-      : null
-    if (invoice?.providerInvoiceId) {
-      return {
-        invoiceId: invoice.id,
-        id: invoice.providerInvoiceId,
-        number: invoice.number,
-        status: invoice.status,
-        hostedUrl: invoice.hostedUrl,
-        pdfUrl: invoice.pdfUrl,
-        provider: invoice.provider,
-        subtotalCents: invoice.subtotalCents,
-        taxCents: invoice.taxCents,
-        totalCents: invoice.totalCents,
-        duplicate: true,
-      }
-    }
-    if (!invoice) {
-      try {
-        invoice = await this.prisma.billingInvoice.create({
-          data: {
-            organizationId, configId: config.id, customerId: customer.id, provider: config.provider,
-            status: 'open', currency, subtotalCents: subtotal, taxCents: tax, totalCents: total,
-            lineItems: lineItems as any, metadata: { description: dto.description ?? null } as any,
-            idempotencyKey: cycle?.idempotencyKey,
-            periodStart: cycle?.periodStart,
-            periodEnd: cycle?.periodEnd,
-          },
-        })
-      } catch (error) {
-        if (!cycle || !this.isUniqueConflict(error)) throw error
-        invoice = await this.prisma.billingInvoice.findUnique({ where: { idempotencyKey: cycle.idempotencyKey } })
-        if (!invoice) throw error
-      }
-    }
+    // Persist the invoice locally first (draft), then charge.
+    const invoice = await this.prisma.billingInvoice.create({
+      data: {
+        organizationId, configId: config.id, customerId: customer.id, provider: config.provider,
+        status: 'open', currency, subtotalCents: subtotal, taxCents: tax, totalCents: total,
+        lineItems: lineItems as any, metadata: { description: dto.description ?? null } as any,
+      },
+    })
 
     const result = await gateway.createInvoice({
       memberOrCustomerId: customer.providerMemberId ?? customer.providerCustomerId ?? undefined,
@@ -239,7 +201,6 @@ export class BillingService {
       description: dto.description ?? undefined,
       autoCharge: dto.autoCharge ?? true,
       metadata: { organizationId, invoiceId: invoice.id },
-      idempotencyKey: cycle?.idempotencyKey,
     })
 
     await this.prisma.billingInvoice.update({
@@ -272,7 +233,7 @@ export class BillingService {
       },
       update: {
         planId: plan.id, status: trialDays > 0 ? 'trialing' : 'active',
-        trialEndsAt, currentPeriodEnd: trialEndsAt ?? this.nextPeriodEnd(plan.interval), pastDueSince: null,
+        trialEndsAt, currentPeriodEnd: trialEndsAt ?? this.nextPeriodEnd(plan.interval),
       },
     })
     await this.prisma.organization.update({ where: { id: organizationId }, data: { plan: plan.key } })
@@ -294,71 +255,24 @@ export class BillingService {
       },
       include: { plan: true },
     })
-    const results: Array<{ organizationId: string; ok: boolean; skipped?: boolean; error?: string }> = []
-    const staleLock = new Date(now.getTime() - 15 * 60_000)
+    const results: Array<{ organizationId: string; ok: boolean; error?: string }> = []
     for (const sub of due) {
-      const lockToken = randomUUID()
-      const claimed = await this.prisma.subscription.updateMany({
-        where: {
-          organizationId: sub.organizationId,
-          status: { in: ['trialing', 'active', 'past_due'] },
-          currentPeriodEnd: sub.currentPeriodEnd,
-          OR: [{ billingLockAt: null }, { billingLockAt: { lt: staleLock } }],
-        },
-        data: { billingLockAt: now, billingLockToken: lockToken },
-      })
-      if (claimed.count !== 1) {
-        results.push({ organizationId: sub.organizationId, ok: true, skipped: true })
-        continue
-      }
-      const periodStart = sub.currentPeriodEnd ?? now
-      const periodEnd = this.nextPeriodEnd(sub.plan.interval, periodStart)
       try {
-        let paymentStatus = 'paid'
         if (sub.plan.priceCents > 0) {
-          const invoice = await this.chargeTenant(sub.organizationId, {
+          await this.chargeTenant(sub.organizationId, {
             amountCents: sub.plan.priceCents,
             currency: sub.plan.currency,
             description: `${sub.plan.name} (${sub.plan.interval}ly)`,
             recurring: true, autoCharge: true,
-          }, {
-            idempotencyKey: `subscription:${sub.id}:${periodStart.toISOString()}`,
-            periodStart,
-            periodEnd,
-          })
-          paymentStatus = invoice.status
-        }
-        const paid = paymentStatus === 'paid'
-        if (!paid) {
-          await this.prisma.subscription.updateMany({
-            where: { organizationId: sub.organizationId, billingLockToken: lockToken, pastDueSince: null },
-            data: { pastDueSince: now },
           })
         }
-        await this.prisma.subscription.updateMany({
-          where: { organizationId: sub.organizationId, billingLockToken: lockToken },
-          data: {
-            status: paid ? 'active' : 'past_due',
-            ...(paid ? { currentPeriodEnd: periodEnd } : {}),
-            ...(paid ? { pastDueSince: null } : {}),
-            billingLockAt: null,
-            billingLockToken: null,
-          },
+        await this.prisma.subscription.update({
+          where: { organizationId: sub.organizationId },
+          data: { status: 'active', currentPeriodEnd: this.nextPeriodEnd(sub.plan.interval, sub.currentPeriodEnd ?? now) },
         })
-        results.push({
-          organizationId: sub.organizationId,
-          ok: paid,
-          ...(paid ? {} : { error: `Payment is ${paymentStatus}; access remains in the configured past-due grace period` }),
-        })
+        results.push({ organizationId: sub.organizationId, ok: true })
       } catch (e: any) {
-        await this.prisma.subscription.updateMany({
-          where: { organizationId: sub.organizationId, billingLockToken: lockToken, pastDueSince: null },
-          data: { pastDueSince: now },
-        })
-        await this.prisma.subscription.updateMany({
-          where: { organizationId: sub.organizationId, billingLockToken: lockToken },
-          data: { status: 'past_due', billingLockAt: null, billingLockToken: null },
-        })
+        await this.prisma.subscription.update({ where: { organizationId: sub.organizationId }, data: { status: 'past_due' } })
         results.push({ organizationId: sub.organizationId, ok: false, error: e?.message })
       }
     }
@@ -376,10 +290,8 @@ export class BillingService {
   // ── Payouts ───────────────────────────────────────────────────────
   async createPayout(dto: CreatePayoutDto) {
     const config = await this.getConfigRow(dto.configId)
-    this.assertUsableConfig(config, 'platform')
     const gateway = this.factory.build(config)
     if (!gateway.supportsPayouts()) throw new BadRequestException(`${config.provider} does not support payouts`)
-    this.assertPayoutDestination(dto.destination)
     return gateway.createPayout({
       amountCents: dto.amountCents,
       currency: (dto.currency || 'PKR').toUpperCase(),
@@ -389,148 +301,79 @@ export class BillingService {
 
   // ── Webhooks ──────────────────────────────────────────────────────
   async handleWebhook(provider: ProviderName, configId: string, rawBody: string, headers: Record<string, any>) {
-    if (!['whop', 'swich'].includes(provider)) throw new BadRequestException('Unsupported billing provider')
-    if (!rawBody || Buffer.byteLength(rawBody, 'utf8') > 256 * 1024) {
-      throw new BadRequestException('Webhook body is empty or exceeds 256 KiB')
-    }
     const config = await this.getConfigRow(configId)
     if (config.provider !== provider) throw new BadRequestException('Provider/config mismatch')
-    this.assertUsableConfig(config)
     const gateway = this.factory.build(config)
-    let evt: NormalizedEvent
-    try {
-      evt = gateway.verifyAndParseWebhook({ rawBody, headers })
-    } catch (error) {
-      if (error instanceof GatewayError) throw new HttpException(error.message, error.status ?? 400)
-      throw error
-    }
-    if (!evt.id?.trim() || evt.id.length > 255) throw new BadRequestException('Webhook event id is missing or invalid')
-    if (!evt.type?.trim() || evt.type.length > 200) throw new BadRequestException('Webhook event type is missing or invalid')
+    const evt = gateway.verifyAndParseWebhook({ rawBody, headers })
 
-    // Insert-first idempotency closes the find-then-create race. A failed event
-    // may be retried; processed/ignored/in-flight events are acknowledged.
-    let record: any
+    // Idempotency: skip if we've already stored this event id.
+    const dedupeId = evt.id || `${provider}:${Date.now()}`
+    const existing = await this.prisma.gatewayEvent.findUnique({
+      where: { provider_eventId: { provider, eventId: dedupeId } },
+    }).catch(() => null)
+    if (existing) return { ok: true, duplicate: true }
+
+    const record = await this.prisma.gatewayEvent.create({
+      data: { provider, eventId: dedupeId, type: evt.type, payload: evt.raw as any, status: 'received' },
+    })
     try {
-      record = await this.prisma.gatewayEvent.create({
-        data: { provider, eventId: evt.id, type: evt.type, payload: evt.raw as any, status: 'received' },
-      })
-    } catch (error) {
-      if (!this.isUniqueConflict(error)) throw error
-      const existing = await this.prisma.gatewayEvent.findUnique({
-        where: { provider_eventId: { provider, eventId: evt.id } },
-      })
-      if (!existing || existing.status !== 'failed') return { ok: true, duplicate: true }
-      const reclaimed = await this.prisma.gatewayEvent.updateMany({
-        where: { id: existing.id, status: 'failed' },
-        data: { status: 'received', error: null },
-      })
-      if (reclaimed.count !== 1) return { ok: true, duplicate: true }
-      record = existing
-    }
-    try {
-      const handled = await this.processEvent(config, evt)
-      await this.prisma.gatewayEvent.update({
-        where: { id: record.id },
-        data: { status: handled ? 'processed' : 'ignored', processedAt: new Date() },
-      })
+      await this.processEvent(config, evt)
+      await this.prisma.gatewayEvent.update({ where: { id: record.id }, data: { status: 'processed', processedAt: new Date() } })
     } catch (e: any) {
       await this.prisma.gatewayEvent.update({ where: { id: record.id }, data: { status: 'failed', error: e?.message?.slice(0, 500) } })
       this.log.error(`Webhook ${evt.type} processing failed: ${e?.message}`)
-      throw new ServiceUnavailableException('Webhook was verified but could not be processed; retry later')
     }
     return { ok: true }
   }
 
-  private async processEvent(config: PaymentGatewayConfig, evt: NormalizedEvent): Promise<boolean> {
+  private async processEvent(config: PaymentGatewayConfig, evt: NormalizedEvent) {
     const data = evt.data ?? {}
     switch (evt.type) {
       case 'setup_intent.succeeded': {
         // Card saved → attach payment method to the tenant's BillingCustomer.
         const organizationId = data.metadata?.organizationId ?? data.checkout_configuration?.metadata?.organizationId
-        if (!organizationId) return false
-        this.assertEventOrganization(config, organizationId)
         const pm = data.payment_method ?? {}
         const memberId = data.member?.id ?? data.member_id
-        const updated = await this.prisma.billingCustomer.updateMany({
-          where: { organizationId, configId: config.id },
-          data: {
-            providerMemberId: memberId ?? undefined,
-            defaultPaymentMethodId: pm.id ?? undefined,
-            cardBrand: pm.card?.brand ?? pm.brand ?? undefined,
-            cardLast4: pm.card?.last4 ?? pm.last4 ?? undefined,
-            cardExpMonth: pm.card?.exp_month ?? undefined,
-            cardExpYear: pm.card?.exp_year ?? undefined,
-          },
-        })
-        if (updated.count !== 1) throw new BadRequestException('Billing customer setup session was not found')
-        return true
-      }
-      case 'payment.succeeded':
-      case 'invoice.paid': {
-        const invoice = await this.resolveEventInvoice(config, evt)
-        if (!invoice) return false
-        await this.prisma.$transaction(async (tx) => {
-          await tx.billingInvoice.updateMany({
-            where: { id: invoice.id, configId: config.id },
+        if (organizationId) {
+          await this.prisma.billingCustomer.updateMany({
+            where: { organizationId, configId: config.id },
             data: {
-              status: 'paid',
-              paidAt: new Date(),
-              providerPaymentId: evt.type === 'payment.succeeded' ? data.id ?? undefined : undefined,
+              providerMemberId: memberId ?? undefined,
+              defaultPaymentMethodId: pm.id ?? undefined,
+              cardBrand: pm.card?.brand ?? pm.brand ?? undefined,
+              cardLast4: pm.card?.last4 ?? pm.last4 ?? undefined,
+              cardExpMonth: pm.card?.exp_month ?? undefined,
+              cardExpYear: pm.card?.exp_year ?? undefined,
             },
           })
-          if (invoice.periodStart && invoice.periodEnd) {
-            await tx.subscription.updateMany({
-              where: {
-                organizationId: invoice.organizationId,
-                status: { in: ['trialing', 'active', 'past_due'] },
-                currentPeriodEnd: { lte: invoice.periodStart },
-              },
-              data: {
-                status: 'active',
-                currentPeriodEnd: invoice.periodEnd,
-                pastDueSince: null,
-                billingLockAt: null,
-                billingLockToken: null,
-              },
-            })
-          }
-        })
-        return true
+        }
+        break
       }
-      case 'payment.failed':
-      case 'invoice.past_due':
-      case 'invoice.marked_uncollectible': {
-        const invoice = await this.resolveEventInvoice(config, evt)
-        if (!invoice) return false
-        await this.prisma.$transaction([
-          this.prisma.billingInvoice.updateMany({
-            where: { id: invoice.id, configId: config.id },
-            data: {
-              status: evt.type === 'invoice.marked_uncollectible' ? 'uncollectible' : 'open',
-              providerPaymentId: evt.type === 'payment.failed' ? data.id ?? undefined : undefined,
-            },
-          }),
-          this.prisma.subscription.updateMany({
-            where: { organizationId: invoice.organizationId, status: { not: 'canceled' }, pastDueSince: null },
-            data: { pastDueSince: new Date() },
-          }),
-          this.prisma.subscription.updateMany({
-            where: { organizationId: invoice.organizationId, status: { not: 'canceled' } },
-            data: { status: 'past_due', billingLockAt: null, billingLockToken: null },
-          }),
-        ])
-        return true
+      case 'payment.succeeded': {
+        const invoiceId = data.metadata?.invoiceId
+        if (invoiceId) {
+          await this.prisma.billingInvoice.updateMany({
+            where: { id: invoiceId }, data: { status: 'paid', paidAt: new Date(), providerPaymentId: data.id ?? undefined },
+          })
+        }
+        break
+      }
+      case 'payment.failed': {
+        const organizationId = data.metadata?.organizationId
+        if (organizationId) {
+          await this.prisma.subscription.updateMany({ where: { organizationId }, data: { status: 'past_due' } })
+        }
+        break
       }
       case 'membership.deactivated': {
         const organizationId = data.metadata?.organizationId
-        if (!organizationId) return false
-        this.assertEventOrganization(config, organizationId)
-        await this.prisma.subscription.updateMany({ where: { organizationId }, data: { status: 'canceled' } })
-        return true
+        if (organizationId) {
+          await this.prisma.subscription.updateMany({ where: { organizationId }, data: { status: 'canceled' } })
+        }
+        break
       }
       default:
         this.log.debug(`Unhandled ${config.provider} event: ${evt.type}`)
-        return false
     }
   }
 
@@ -551,12 +394,8 @@ export class BillingService {
 
   private nextPeriodEnd(interval: 'month' | 'year', from: Date = new Date()): Date {
     const d = new Date(from)
-    const originalDay = d.getUTCDate()
-    d.setUTCDate(1)
-    if (interval === 'year') d.setUTCFullYear(d.getUTCFullYear() + 1)
-    else d.setUTCMonth(d.getUTCMonth() + 1)
-    const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()
-    d.setUTCDate(Math.min(originalDay, lastDay))
+    if (interval === 'year') d.setFullYear(d.getFullYear() + 1)
+    else d.setMonth(d.getMonth() + 1)
     return d
   }
 
@@ -567,12 +406,7 @@ export class BillingService {
   }
 
   private async pickConfig(configId?: string, provider?: ProviderName): Promise<PaymentGatewayConfig> {
-    if (configId) {
-      const row = await this.getConfigRow(configId)
-      this.assertUsableConfig(row, 'platform')
-      if (provider && row.provider !== provider) throw new BadRequestException('Gateway provider/config mismatch')
-      return row
-    }
+    if (configId) return this.getConfigRow(configId)
     const row = await this.prisma.paymentGatewayConfig.findFirst({
       where: { scope: 'platform', isActive: true, ...(provider ? { provider } : {}) },
       orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
@@ -588,74 +422,7 @@ export class BillingService {
     })
     if (!customer) throw new BadRequestException('No saved payment method for this tenant. Run setup first.')
     const config = await this.getConfigRow(customer.configId)
-    this.assertUsableConfig(config, 'platform')
     return { config, customer }
-  }
-
-  private assertUsableConfig(config: PaymentGatewayConfig, scope?: 'platform' | 'tenant') {
-    if (!config.isActive) throw new BadRequestException('Gateway config is inactive')
-    if (scope && config.scope !== scope) throw new NotFoundException('Gateway config not found')
-    if (config.scope === 'tenant' && !config.organizationId) {
-      throw new BadRequestException('Tenant gateway is missing its organization binding')
-    }
-  }
-
-  /** Prevent gateway-hosted pages from becoming an arbitrary redirector. */
-  private validatedReturnUrl(requested?: string): string | undefined {
-    if (!requested) return undefined
-    const appUrl = process.env.APP_URL || process.env.APP_PUBLIC_URL
-    if (!appUrl) throw new BadRequestException('APP_URL must be configured before using a custom return URL')
-    try {
-      const target = new URL(requested)
-      const application = new URL(appUrl)
-      if (target.origin !== application.origin) {
-        throw new BadRequestException('Return URL must use the configured application origin')
-      }
-      return target.toString()
-    } catch (error) {
-      if (error instanceof BadRequestException) throw error
-      throw new BadRequestException('Return URL is invalid')
-    }
-  }
-
-  private assertPayoutDestination(destination: Record<string, unknown>) {
-    let encoded = ''
-    try { encoded = JSON.stringify(destination) }
-    catch { throw new BadRequestException('Payout destination must be valid JSON') }
-    if (!encoded || encoded.length > 8_192 || Object.keys(destination).length > 30) {
-      throw new BadRequestException('Payout destination is too large')
-    }
-  }
-
-  private assertEventOrganization(config: PaymentGatewayConfig, organizationId: string) {
-    if (config.scope === 'tenant' && config.organizationId !== organizationId) {
-      throw new BadRequestException('Webhook tenant does not match this gateway config')
-    }
-  }
-
-  private async resolveEventInvoice(config: PaymentGatewayConfig, evt: NormalizedEvent) {
-    const data = evt.data ?? {}
-    const localId = data.metadata?.invoiceId
-    const providerInvoiceId =
-      data.invoice_id ??
-      data.invoice?.id ??
-      (evt.type.startsWith('invoice.') ? data.id : null)
-    if (!localId && !providerInvoiceId) return null
-    const invoice = await this.prisma.billingInvoice.findFirst({
-      where: {
-        configId: config.id,
-        OR: [
-          ...(localId ? [{ id: String(localId) }] : []),
-          ...(providerInvoiceId ? [{ providerInvoiceId: String(providerInvoiceId) }] : []),
-        ],
-      },
-    })
-    if (invoice) this.assertEventOrganization(config, invoice.organizationId)
-    return invoice
-  }
-
-  private isUniqueConflict(error: unknown): boolean {
-    return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
   }
 
   private async getOrg(id: string) {

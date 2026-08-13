@@ -1,4 +1,4 @@
-import { IsNumber, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator'
+import { IsNumber, IsString, Min } from 'class-validator'
 
 /**
  * Refund payload for the machine-to-machine refund endpoint
@@ -6,15 +6,13 @@ import { IsNumber, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator
  * plugins/custom stores don't need our internal order id.
  */
 export class ApiRefundDto {
-  @IsUUID()
+  @IsString()
   storeId!: string
 
   @IsString()
-  @MaxLength(255)
   externalOrderId!: string
 
   @IsNumber()
   @Min(0)
-  @Max(1_000_000_000_000)
   refundAmount!: number
 }

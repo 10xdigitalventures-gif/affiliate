@@ -32,12 +32,10 @@ function makeService(settingsOverride: Record<string, unknown> = {}) {
     click: { count: jest.fn(async () => 0) },
     fraudReview: {
       count: jest.fn(async () => 0),
-      upsert: jest.fn(async ({ create }: any) => ({ id: 'fr-1', ...create })),
+      create: jest.fn(async ({ data }: any) => ({ id: 'fr-1', ...data })),
       findMany: jest.fn(async () => []),
       findFirst: jest.fn(),
       update: jest.fn(async ({ data }: any) => data),
-      updateMany: jest.fn(async () => ({ count: 1 })),
-      findUniqueOrThrow: jest.fn(async () => ({ id: 'fr-1', status: 'approved' })),
     },
   }
   const audit: any = { log: jest.fn(async () => ({})) }
@@ -153,9 +151,9 @@ describe('FraudService scoring', () => {
       affiliateId: 'aff-1',
       result: reviewResult,
     })
-    expect(prisma.fraudReview.upsert).toHaveBeenCalledWith(
+    expect(prisma.fraudReview.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({ status: 'open', decision: 'review', score: 50 }),
+        data: expect.objectContaining({ status: 'open', decision: 'review', score: 50 }),
       }),
     )
   })

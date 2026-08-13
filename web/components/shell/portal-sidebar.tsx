@@ -1,12 +1,11 @@
 'use client'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Link2, ShoppingCart, Wallet, Banknote, FileText, TicketPercent } from 'lucide-react'
+import { LayoutDashboard, Link2, ShoppingCart, Wallet, Banknote, FileText } from 'lucide-react'
 
-export const PORTAL_NAV = [
+const NAV = [
   { href: '/portal', label: 'Overview', icon: LayoutDashboard },
   { href: '/portal/links', label: 'My links', icon: Link2 },
-  { href: '/portal/coupons', label: 'Coupons & offers', icon: TicketPercent },
   { href: '/portal/orders', label: 'Orders', icon: ShoppingCart },
   { href: '/portal/earnings', label: 'Earnings', icon: Wallet },
   { href: '/portal/payouts', label: 'Payouts', icon: Banknote },
@@ -22,7 +21,7 @@ export function PortalSidebar() {
         <span className="font-semibold text-sm">Partner portal</span>
       </div>
       <nav className="flex-1 p-1.5 space-y-0.5">
-        {PORTAL_NAV.map(({ href, label, icon: Icon }) => {
+        {NAV.map(({ href, label, icon: Icon }) => {
           const active = pathname === href
           return (
             <Link

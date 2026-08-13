@@ -2,6 +2,7 @@ import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core'
 import { RequestIdMiddleware } from './observability/request-id.middleware'
+import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor'
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler'
 import { PrismaModule } from './prisma/prisma.module'
 import { CryptoModule } from './common/crypto/crypto.module'
@@ -39,8 +40,6 @@ import { ShopifyAppModule } from './shopify-app/shopify-app.module'
 import { BillingModule } from './billing/billing.module'
 import { TaxModule } from './tax/tax.module'
 import { EmailTemplatesModule } from './email-templates/email-templates.module'
-import { TeamModule } from './team/team.module'
-import { AuditMutationInterceptor } from './audit/audit-mutation.interceptor'
 
 @Module({
   imports: [
@@ -98,18 +97,18 @@ import { AuditMutationInterceptor } from './audit/audit-mutation.interceptor'
     TaxModule,
     // Phase 36 - per-tenant branded + editable email templates
     EmailTemplatesModule,
-    // Enterprise workspace team, custom roles and invitation management.
-    TeamModule,
   ],
   providers: [
     // Apply rate limiting globally to every route.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
-    { provide: APP_INTERCEPTOR, useClass: AuditMutationInterceptor },
+    // Publish the authenticated user's organization so the Prisma middleware
+    // can scope every query to it. Must run after the guards populate req.user.
+    { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
   ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     // Tag every request with a traceable id (echoed as x-request-id).
-    consumer.apply(RequestIdMiddleware).forRoutes('{*splat}')
+    consumer.apply(RequestIdMiddleware).forRoutes('*')
   }
 }

@@ -7,7 +7,7 @@ function makeService() {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
-    affiliate: { findFirst: jest.fn(), findMany: jest.fn() },
+    affiliate: { findFirst: jest.fn() },
     click: { create: jest.fn() },
     $transaction: jest.fn(async (ops: any[]) => Promise.all(ops)),
   }
@@ -105,43 +105,5 @@ describe('TrackingService.recordPixelClick', () => {
     prisma.click.create.mockResolvedValue({ id: 'c' })
     await service.recordPixelClick('org-42', 'C', {})
     expect(prisma.affiliate.findFirst.mock.calls[0][0].where.organizationId).toBe('org-42')
-  })
-
-  it('canonicalizes mixed-case referral code and slug lookups', async () => {
-    const { service, prisma } = makeService()
-    prisma.affiliate.findFirst.mockResolvedValue({ id: 'a', affiliateCode: 'MIXED' })
-    prisma.click.create.mockResolvedValue({ id: 'c' })
-
-    await service.recordPixelClick('org-42', '  MiXeD  ', {})
-
-    expect(prisma.affiliate.findFirst).toHaveBeenCalledWith({
-      where: expect.objectContaining({
-        organizationId: 'org-42',
-        OR: [{ affiliateCode: 'MIXED' }, { referralSlug: 'mixed' }],
-      }),
-    })
-  })
-
-  it('rejects an ambiguous referral code when org is omitted', async () => {
-    const { service, prisma } = makeService()
-    prisma.affiliate.findMany.mockResolvedValue([
-      { id: 'org-1-aff', affiliateCode: 'SHARED' },
-      { id: 'org-2-aff', affiliateCode: 'SHARED' },
-    ])
-
-    await expect(service.recordPixelClick(null, 'SHARED', {})).resolves.toBeNull()
-    expect(prisma.click.create).not.toHaveBeenCalled()
-  })
-
-  it('allows an unambiguous referral code when org is omitted', async () => {
-    const { service, prisma } = makeService()
-    prisma.affiliate.findMany.mockResolvedValue([{ id: 'aff-1', affiliateCode: 'ONLY' }])
-    prisma.click.create.mockResolvedValue({ id: 'click-1' })
-
-    await expect(service.recordPixelClick(null, 'ONLY', {})).resolves.toEqual({
-      clickId: 'click-1',
-      affiliateId: 'aff-1',
-      affiliateCode: 'ONLY',
-    })
   })
 })

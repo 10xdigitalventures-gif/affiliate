@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsOptional, IsString, MaxLength, MinLength } from 'class-validator'
+import { IsBoolean, IsIn, IsOptional, IsString, MinLength } from 'class-validator'
 
 /**
  * Affiliate-submitted tax form. W-9 for US persons, W-8BEN for foreign persons.
@@ -10,18 +10,15 @@ export class TaxFormDto {
 
   @IsString()
   @MinLength(2)
-  @MaxLength(120)
   legalName!: string
 
   @IsOptional()
   @IsString()
-  @MaxLength(120)
   businessName?: string
 
   // W-9 federal tax classification (individual/sole_prop, c_corp, s_corp, partnership, trust, llc)
   @IsOptional()
   @IsString()
-  @IsIn(['individual', 'sole_prop', 'c_corp', 's_corp', 'partnership', 'trust', 'llc'])
   taxClassification?: string
 
   @IsOptional()
@@ -30,41 +27,32 @@ export class TaxFormDto {
 
   @IsString()
   @MinLength(4)
-  @MaxLength(32)
   tin!: string
 
   @IsString()
-  @MinLength(2)
-  @MaxLength(100)
   country!: string
 
   @IsString()
-  @MaxLength(200)
   address1!: string
 
   @IsOptional()
   @IsString()
-  @MaxLength(200)
   address2?: string
 
   @IsString()
-  @MaxLength(100)
   city!: string
 
   @IsOptional()
   @IsString()
-  @MaxLength(100)
   state?: string
 
   @IsOptional()
   @IsString()
-  @MaxLength(32)
   postalCode?: string
 
   // Typed signature acknowledging the perjury certification.
   @IsString()
   @MinLength(2)
-  @MaxLength(120)
   signature!: string
 
   @IsBoolean()

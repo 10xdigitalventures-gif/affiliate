@@ -106,11 +106,10 @@ export class NotificationsService {
   async list(organizationId: string, userId: string, params: ListParams = {}) {
     const where: any = { organizationId, recipientUserId: userId }
     if (params.unreadOnly) where.readAt = null
-    const limit = Number.isInteger(params.limit) ? Math.min(Math.max(params.limit!, 1), 200) : 50
     return this.prisma.notification.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      take: limit,
+      take: Math.min(params.limit ?? 50, 200),
     })
   }
 

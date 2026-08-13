@@ -9,22 +9,18 @@ function makeService() {
   const prisma: any = {
     store: { findFirst: jest.fn() },
     customer: {
-      findUnique: jest.fn().mockResolvedValue(null),
-      create: jest.fn().mockResolvedValue({ id: 'cust-1' }),
-      update: jest.fn(),
+      upsert: jest.fn(),
+      create: jest.fn(),
       updateMany: jest.fn(async () => ({ count: 1 })),
     },
     order: {
       upsert: jest.fn(),
       findFirst: jest.fn(),
       update: jest.fn(),
-      updateMany: jest.fn(async () => ({ count: 1 })),
-      findUniqueOrThrow: jest.fn(),
       findMany: jest.fn(),
-      count: jest.fn().mockResolvedValue(0),
+      count: jest.fn(),
     },
-    click: { findFirst: jest.fn().mockResolvedValue(null) },
-    $transaction: jest.fn(async (work: any) => typeof work === 'function' ? work(prisma) : Promise.all(work)),
+    $transaction: jest.fn(async (ops: any[]) => Promise.all(ops)),
   }
   const attribution: any = { resolve: jest.fn() }
   const commissions: any = {
@@ -60,6 +56,7 @@ describe('OrdersService.ingest', () => {
   it('ingests without attribution and skips commission', async () => {
     const { service, prisma, attribution, commissions } = makeService()
     prisma.store.findFirst.mockResolvedValue({ id: 'store-1', organizationId: 'org-1' })
+    prisma.customer.upsert.mockResolvedValue({ id: 'cust-1' })
     attribution.resolve.mockResolvedValue(null)
     prisma.order.upsert.mockResolvedValue({
       id: 'ord-1',
@@ -78,6 +75,7 @@ describe('OrdersService.ingest', () => {
   it('generates commission when fraud allows', async () => {
     const { service, prisma, attribution, commissions, fraud } = makeService()
     prisma.store.findFirst.mockResolvedValue({ id: 'store-1', organizationId: 'org-1' })
+    prisma.customer.upsert.mockResolvedValue({ id: 'cust-1' })
     attribution.resolve.mockResolvedValue({
       affiliateId: 'aff-1',
       method: 'cookie',
@@ -103,6 +101,7 @@ describe('OrdersService.ingest', () => {
   it('queues fraud review and skips commission on review decision', async () => {
     const { service, prisma, attribution, commissions, fraud } = makeService()
     prisma.store.findFirst.mockResolvedValue({ id: 'store-1', organizationId: 'org-1' })
+    prisma.customer.upsert.mockResolvedValue({ id: 'cust-1' })
     attribution.resolve.mockResolvedValue({
       affiliateId: 'aff-1',
       method: 'cookie',
@@ -129,6 +128,7 @@ describe('OrdersService.ingest', () => {
   it('uses multi-touch split when model is linear with multiple shares', async () => {
     const { service, prisma, attribution, commissions, fraud } = makeService()
     prisma.store.findFirst.mockResolvedValue({ id: 'store-1', organizationId: 'org-1' })
+    prisma.customer.upsert.mockResolvedValue({ id: 'cust-1' })
     attribution.resolve.mockResolvedValue({
       affiliateId: 'aff-a',
       method: 'cookie',
@@ -158,8 +158,8 @@ describe('OrdersService.refund', () => {
 
   it('updates refund amount and calls handleRefund', async () => {
     const { service, prisma, commissions } = makeService()
-    prisma.order.findFirst.mockResolvedValue({ id: 'ord-1', total: 100, refundAmount: 0 })
-    prisma.order.findUniqueOrThrow.mockResolvedValue({ id: 'ord-1', total: 100, refundAmount: 25 })
+    prisma.order.findFirst.mockResolvedValue({ id: 'ord-1', total: 100 })
+    prisma.order.update.mockResolvedValue({ id: 'ord-1', total: 100, refundAmount: 25 })
 
     const res = await service.refund('org-1', 'ord-1', 25)
     expect(res.refundAmount).toBe(25)

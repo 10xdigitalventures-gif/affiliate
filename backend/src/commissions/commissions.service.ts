@@ -4,7 +4,6 @@ import { PrismaService } from '../prisma/prisma.service'
 import { AuditService } from '../audit/audit.service'
 import { MailService } from '../mail/mail.service'
 import { NotificationsService } from '../notifications/notifications.service'
-import { EntitlementsService } from '../entitlements/entitlements.service'
 import * as T from '../mail/templates'
 
 type OrderLike = {
@@ -27,7 +26,6 @@ export class CommissionsService {
     private readonly audit: AuditService,
     private readonly mail: MailService,
     private readonly notifications: NotificationsService,
-    private readonly entitlements: EntitlementsService,
   ) {}
 
   private scopeRank: Record<string, number> = {
@@ -194,11 +192,8 @@ export class CommissionsService {
   async getSubAffiliateConfig(organizationId: string) {
     const org = await this.prisma.organization.findUnique({ where: { id: organizationId } })
     const s = (org?.settings ?? {}) as Record<string, unknown>
-    const entitled = s.subAffiliateEnabled === true
-      ? await this.entitlements.can(organizationId, 'multiTierCommissions')
-      : false
     return {
-      enabled: entitled,
+      enabled: s.subAffiliateEnabled === true,
       rate: typeof s.subAffiliateRate === 'number' ? s.subAffiliateRate : 10,
       maxDepth: typeof s.subAffiliateMaxDepth === 'number' ? s.subAffiliateMaxDepth : 1,
       decay: typeof s.subAffiliateDecay === 'number' ? s.subAffiliateDecay : 1,
@@ -278,9 +273,8 @@ export class CommissionsService {
     affiliateId: string,
     attribution: { method: string; clickId?: string | null; channel?: string | null; attributionType?: string | null; customerType?: 'new' | 'returning' | null },
   ) {
-    const idempotencyKey = `commission:${order.id}:${affiliateId}:tier:0`
-    const existing = await this.prisma.commission.findUnique({ where: { idempotencyKey } })
-    if (existing) return existing
+    const existing = await this.prisma.commission.findFirst({ where: { orderId: order.id } })
+    if (existing) return existing // idempotent
 
     const attributionType = attribution.attributionType ?? (attribution.method === 'coupon' ? 'code' : attribution.method === 'cookie' ? 'link' : attribution.method)
     const channel = attribution.channel === 'paid' ? 'paid' : 'organic'
@@ -305,9 +299,8 @@ export class CommissionsService {
     }
 
     const [commission] = await this.prisma.$transaction([
-      this.prisma.commission.upsert({
-        where: { idempotencyKey },
-        create: {
+      this.prisma.commission.create({
+        data: {
           orderId: order.id,
           affiliateId,
           commissionRuleId: ruleId,
@@ -317,19 +310,15 @@ export class CommissionsService {
           tier: 0,
           channel,
           attributionType,
-          idempotencyKey,
         },
-        update: {},
       }),
-      this.prisma.conversion.upsert({
-        where: { orderId_affiliateId: { orderId: order.id, affiliateId } },
-        create: {
+      this.prisma.conversion.create({
+        data: {
           orderId: order.id,
           affiliateId,
           clickId: attribution.clickId ?? null,
           attributionMethod: attribution.method as any,
         },
-        update: {},
       }),
     ])
 
@@ -362,16 +351,7 @@ export class CommissionsService {
     const existing = await this.prisma.commission.findMany({ where: { orderId: order.id, tier: 0 } })
     if (existing.length > 0) return existing
 
-    const combined = new Map<string, { affiliateId: string; weight: number; clickId?: string | null }>()
-    for (const share of shares.filter((value) => value.weight > 0 && value.affiliateId)) {
-      const existingShare = combined.get(share.affiliateId)
-      combined.set(share.affiliateId, {
-        affiliateId: share.affiliateId,
-        weight: (existingShare?.weight ?? 0) + share.weight,
-        clickId: existingShare?.clickId ?? share.clickId,
-      })
-    }
-    const normalized = [...combined.values()]
+    const normalized = shares.filter((s) => s.weight > 0 && s.affiliateId)
     if (normalized.length === 0) return []
     if (normalized.length === 1) {
       const one = await this.generateForOrder(
@@ -411,10 +391,8 @@ export class CommissionsService {
     for (const share of normalized) {
       const shareAmount = full.mul(share.weight).toDecimalPlaces(4)
       if (shareAmount.lte(0)) continue
-      const idempotencyKey = `commission:${order.id}:${share.affiliateId}:tier:0`
-      const commission = await this.prisma.commission.upsert({
-        where: { idempotencyKey },
-        create: {
+      const commission = await this.prisma.commission.create({
+        data: {
           orderId: order.id,
           affiliateId: share.affiliateId,
           commissionRuleId: ruleId,
@@ -424,20 +402,16 @@ export class CommissionsService {
           tier: 0,
           channel,
           attributionType,
-          idempotencyKey,
         },
-        update: {},
       })
-      await this.prisma.conversion.upsert({
-        where: { orderId_affiliateId: { orderId: order.id, affiliateId: share.affiliateId } },
-        create: {
+      await this.prisma.conversion.create({
+        data: {
           orderId: order.id,
           affiliateId: share.affiliateId,
           clickId: share.clickId ?? null,
           attributionMethod: attribution.method as any,
         },
-        update: {},
-      })
+      }).catch(() => {})
       created.push(commission)
     }
 
@@ -509,10 +483,8 @@ export class CommissionsService {
         const effectiveRate = new Prisma.Decimal(cfg.rate).mul(new Prisma.Decimal(cfg.decay).pow(tier - 1))
         const overrideAmount = base.mul(effectiveRate).div(100)
         if (overrideAmount.gt(0)) {
-          const idempotencyKey = `commission:${order.id}:${parentId}:tier:${tier}:source:${sourceCommissionId}`
-          await this.prisma.commission.upsert({
-            where: { idempotencyKey },
-            create: {
+          await this.prisma.commission.create({
+            data: {
               orderId: order.id,
               affiliateId: parentId,
               amount: overrideAmount,
@@ -520,9 +492,7 @@ export class CommissionsService {
               status: 'pending',
               tier,
               sourceCommissionId,
-              idempotencyKey,
             },
-            update: {},
           })
         }
       }
@@ -532,20 +502,10 @@ export class CommissionsService {
 
   async approve(organizationId: string, id: string) {
     const commission = await this.getScoped(organizationId, id)
-    if (commission.status === 'approved') return commission
-    if (commission.status !== 'pending') {
+    if (!['pending', 'approved'].includes(commission.status)) {
       throw new BadRequestException(`Cannot approve a ${commission.status} commission`)
     }
-    const organization = await this.prisma.organization.findUnique({ where: { id: organizationId } })
-    const settings = (organization?.settings ?? {}) as Record<string, unknown>
-    const configuredHold = typeof settings.commissionHoldDays === 'number' ? settings.commissionHoldDays : 0
-    const holdDays = Math.min(Math.max(Math.trunc(configuredHold), 0), 365)
-    const approvedAt = new Date()
-    const payableAt = new Date(approvedAt.getTime() + holdDays * 86_400_000)
-    const updated = await this.prisma.commission.update({
-      where: { id },
-      data: { status: 'approved', approvedAt, payableAt },
-    })
+    const updated = await this.prisma.commission.update({ where: { id }, data: { status: 'approved' } })
     await this.audit.log({ organizationId, action: 'commission.approve', resourceType: 'commission', resourceId: id, oldValue: { status: commission.status }, newValue: { status: 'approved' } }).catch(() => {})
     // Notify affiliate: commission approved (in-app + email)
     this.prisma.affiliate.findUnique({ where: { id: commission.affiliateId }, include: { user: true } }).then((aff) => {
@@ -555,9 +515,7 @@ export class CommissionsService {
       this.notifications.notifyUser(organizationId, aff.userId, {
         type: 'commission.approved',
         title: `Commission approved — ${amount} ${currency}`,
-        body: holdDays > 0
-          ? `A commission was approved and will become payable after the ${holdDays}-day holding period.`
-          : 'A commission was approved and is ready to be marked payable.',
+        body: 'A commission has been approved and added to your balance.',
         data: { commissionId: id, amount, currency },
       }).catch(() => {})
       if (!aff.user?.email) return
@@ -580,205 +538,47 @@ export class CommissionsService {
 
   async markPayable(organizationId: string, id: string) {
     const commission = await this.getScoped(organizationId, id)
-    if (commission.status === 'payable') return commission
     if (commission.status !== 'approved') {
       throw new BadRequestException('Only approved commissions become payable')
     }
-    if (commission.payableAt && commission.payableAt.getTime() > Date.now()) {
-      throw new BadRequestException(`Commission holding period ends at ${commission.payableAt.toISOString()}`)
-    }
-
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const adjustments = await tx.commissionAdjustment.aggregate({
-        where: { commissionId: id },
-        _sum: { delta: true },
-      })
-      const effectiveAmount = Prisma.Decimal.max(
-        new Prisma.Decimal(commission.amount).add(adjustments._sum.delta ?? 0),
-        new Prisma.Decimal(0),
-      )
-      const claimed = await tx.commission.updateMany({
-        where: { id, status: 'approved' },
-        data: { status: effectiveAmount.gt(0) ? 'payable' : 'reversed' },
-      })
-      if (claimed.count !== 1) {
-        const current = await tx.commission.findUniqueOrThrow({ where: { id } })
-        if (current.status === 'payable') return current
-        throw new BadRequestException(`Commission is already ${current.status}`)
-      }
-      if (effectiveAmount.gt(0)) {
-        await tx.affiliateLedgerEntry.create({
-          data: {
-            organizationId,
-            affiliateId: commission.affiliateId,
-            commissionId: id,
-            type: 'commission_payable',
-            balanceDelta: effectiveAmount,
-            lifetimeDelta: effectiveAmount,
-            currency: commission.currency,
-            idempotencyKey: `commission-payable:${id}`,
-            description: 'Commission became payable',
-          },
-        })
-        await tx.affiliate.update({
-          where: { id: commission.affiliateId },
-          data: {
-            availableBalance: { increment: effectiveAmount },
-            lifetimeEarnings: { increment: effectiveAmount },
-          },
-        })
-        await tx.affiliateBalance.upsert({
-          where: { affiliateId_currency: { affiliateId: commission.affiliateId, currency: commission.currency } },
-          create: {
-            organizationId,
-            affiliateId: commission.affiliateId,
-            currency: commission.currency,
-            available: effectiveAmount,
-            lifetime: effectiveAmount,
-          },
-          update: {
-            available: { increment: effectiveAmount },
-            lifetime: { increment: effectiveAmount },
-          },
-        })
-      }
-      return tx.commission.findUniqueOrThrow({ where: { id } })
-    })
-    await this.audit.log({
-      organizationId,
-      action: 'commission.payable',
-      resourceType: 'commission',
-      resourceId: id,
-      oldValue: { status: 'approved' },
-      newValue: { status: updated.status },
-    }).catch(() => undefined)
-    return updated
+    return this.prisma.commission.update({ where: { id }, data: { status: 'payable' } })
   }
 
   /** Full reversal (e.g. cancelled order). Records an adjustment and flips status. */
   async reverse(organizationId: string, id: string, reason: string, createdBy?: string) {
-    const idempotencyKey = `manual-reversal:${id}`
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const commission = await tx.commission.findFirst({
-        where: { id, affiliate: { organizationId } },
-        include: { adjustments: true, payoutItem: { include: { payout: true } } },
+    const commission = await this.getScoped(organizationId, id)
+    if (commission.status === 'paid') {
+      // Already paid: record a clawback adjustment, deduct from future payouts.
+      await this.prisma.commissionAdjustment.create({
+        data: { commissionId: id, type: 'reversal', delta: new Prisma.Decimal(commission.amount).neg(), reason, createdBy },
       })
-      if (!commission) throw new NotFoundException('Commission not found')
-      if (commission.status === 'reversed' || commission.status === 'cancelled') return commission
-      if (commission.adjustments.some((adjustment) => adjustment.idempotencyKey === idempotencyKey)) return commission
-
-      const remaining = Prisma.Decimal.max(
-        new Prisma.Decimal(commission.amount).add(
-          commission.adjustments.reduce((sum, adjustment) => sum.add(adjustment.delta), new Prisma.Decimal(0)),
-        ),
-        new Prisma.Decimal(0),
-      ).toDecimalPlaces(4)
-      const delta = remaining.neg()
-      await tx.commissionAdjustment.create({
-        data: {
-          commissionId: id,
-          type: 'reversal',
-          delta,
-          reason,
-          createdBy,
-          idempotencyKey,
-          metadata: { source: 'manual_reversal' },
-        },
-      })
-
-      let balanceDelta = new Prisma.Decimal(0)
-      let lifetimeDelta = new Prisma.Decimal(0)
-      const payout = commission.payoutItem?.payout
-      const reserved = !!payout && ['requested', 'approved'].includes(payout.status)
-      const irrevocable = commission.status === 'paid' || payout?.status === 'processing'
-
-      if (remaining.gt(0)) {
-        if (commission.status === 'payable' && !commission.payoutItem) {
-          balanceDelta = delta
-          lifetimeDelta = delta
-        } else if (irrevocable) {
-          balanceDelta = delta
-          lifetimeDelta = delta
-        } else if (commission.status === 'locked' || reserved) {
-          lifetimeDelta = delta
-          if (commission.payoutItem && payout) {
-            const nextItemAmount = Prisma.Decimal.max(
-              new Prisma.Decimal(commission.payoutItem.amount).add(delta),
-              new Prisma.Decimal(0),
-            )
-            const nextPayoutAmount = Prisma.Decimal.max(new Prisma.Decimal(payout.amount).add(delta), new Prisma.Decimal(0))
-            await tx.payoutItem.update({ where: { id: commission.payoutItem.id }, data: { amount: nextItemAmount } })
-            await tx.payout.update({
-              where: { id: payout.id },
-              data: { amount: nextPayoutAmount, ...(nextPayoutAmount.eq(0) ? { status: 'rejected' } : {}) },
-            })
-          }
-        }
-      }
-
-      if (!balanceDelta.eq(0) || !lifetimeDelta.eq(0)) {
-        const affiliate = await tx.affiliate.findUniqueOrThrow({ where: { id: commission.affiliateId } })
-        await tx.affiliateLedgerEntry.create({
-          data: {
-            organizationId,
-            affiliateId: commission.affiliateId,
-            commissionId: id,
-            payoutId: payout?.id,
-            type: 'commission_adjustment',
-            balanceDelta,
-            lifetimeDelta,
-            currency: commission.currency,
-            idempotencyKey: `ledger:${idempotencyKey}`,
-            description: reason,
-            metadata: { source: 'manual_reversal' },
-          },
-        })
-        await tx.affiliate.update({
-          where: { id: commission.affiliateId },
-          data: {
-            availableBalance: { increment: balanceDelta },
-            lifetimeEarnings: { increment: lifetimeDelta },
-          },
-        })
-        await tx.affiliateBalance.upsert({
-          where: { affiliateId_currency: { affiliateId: commission.affiliateId, currency: commission.currency } },
-          create: {
-            organizationId: affiliate.organizationId,
-            affiliateId: commission.affiliateId,
-            currency: commission.currency,
-            available: balanceDelta,
-            lifetime: lifetimeDelta,
-          },
-          update: {
-            available: { increment: balanceDelta },
-            lifetime: { increment: lifetimeDelta },
-          },
-        })
-      }
-
-      await tx.commission.updateMany({
-        where: { id, status: { notIn: ['reversed', 'cancelled'] } },
-        data: { status: 'reversed' },
-      })
-      return tx.commission.findUniqueOrThrow({ where: { id } })
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
-
+      await this.reverseOverrides(id, `Upline reversal: ${reason}`, createdBy)
+      return this.prisma.commission.findUnique({ where: { id } })
+    }
+    const [, updated] = await this.prisma.$transaction([
+      this.prisma.commissionAdjustment.create({
+        data: { commissionId: id, type: 'reversal', delta: new Prisma.Decimal(commission.amount).neg(), reason, createdBy },
+      }),
+      this.prisma.commission.update({ where: { id }, data: { status: 'reversed' } }),
+    ])
     // Cascade: sub-affiliate overrides derived from this commission must reverse too.
-    await this.reverseOverrides(organizationId, id, `Upline reversal: ${reason}`, createdBy)
+    await this.reverseOverrides(id, `Upline reversal: ${reason}`, createdBy)
     return updated
   }
 
   /** Reverse all tier>0 override commissions derived from a source commission. */
-  private async reverseOverrides(organizationId: string, sourceCommissionId: string, reason: string, createdBy?: string) {
+  private async reverseOverrides(sourceCommissionId: string, reason: string, createdBy?: string) {
     const overrides = await this.prisma.commission.findMany({
-      where: {
-        sourceCommissionId,
-        status: { notIn: ['reversed', 'cancelled'] },
-        affiliate: { organizationId },
-      },
+      where: { sourceCommissionId, status: { notIn: ['reversed', 'cancelled'] } },
     })
     for (const o of overrides) {
-      await this.reverse(organizationId, o.id, reason, createdBy)
+      const isPaid = o.status === 'paid'
+      await this.prisma.$transaction([
+        this.prisma.commissionAdjustment.create({
+          data: { commissionId: o.id, type: 'reversal', delta: new Prisma.Decimal(o.amount).neg(), reason, createdBy },
+        }),
+        ...(isPaid ? [] : [this.prisma.commission.update({ where: { id: o.id }, data: { status: 'reversed' } })]),
+      ])
     }
   }
 
@@ -786,138 +586,64 @@ export class CommissionsService {
   async handleRefund(order: { id: string; total: Prisma.Decimal; refundAmount: Prisma.Decimal }) {
     const commissions = await this.prisma.commission.findMany({
       where: { orderId: order.id, status: { notIn: ['reversed', 'cancelled'] } },
-      include: {
-        adjustments: true,
-        payoutItem: { include: { payout: true } },
-      },
     })
     const total = new Prisma.Decimal(order.total)
     const refund = new Prisma.Decimal(order.refundAmount)
     if (total.lte(0)) return
     const ratio = Prisma.Decimal.min(refund.div(total), new Prisma.Decimal(1))
 
-    for (const commission of commissions) {
-      const prefix = `refund:${order.id}:commission:${commission.id}:`
-      const alreadyApplied = commission.adjustments
-        .filter((adjustment) => adjustment.idempotencyKey?.startsWith(prefix))
-        .reduce((sum, adjustment) => sum.add(adjustment.delta), new Prisma.Decimal(0))
-      const targetDelta = new Prisma.Decimal(commission.amount).mul(ratio).neg().toDecimalPlaces(4)
-      const incrementalDelta = targetDelta.sub(alreadyApplied).toDecimalPlaces(4)
-      if (incrementalDelta.eq(0)) continue
-
+    for (const c of commissions) {
+      // Skip overrides here; they are adjusted proportionally alongside their source below.
+      if (c.tier && c.tier > 0) continue
+      const delta = new Prisma.Decimal(c.amount).mul(ratio).neg()
       const isFull = ratio.gte(1)
-      const idempotencyKey = `${prefix}${refund.toDecimalPlaces(4).toString()}`
-      await this.prisma.$transaction(async (tx) => {
-        await tx.commissionAdjustment.create({
+      await this.prisma.$transaction([
+        this.prisma.commissionAdjustment.create({
           data: {
-            commissionId: commission.id,
+            commissionId: c.id,
             type: isFull ? 'reversal' : 'partial_refund',
-            delta: incrementalDelta,
-            reason: `Cumulative refund ${refund.toString()} on order ${order.id}`,
-            idempotencyKey,
-            metadata: { orderId: order.id, cumulativeRefund: refund.toString(), ratio: ratio.toString() },
+            delta,
+            reason: `Refund of ${refund.toString()} on order ${order.id}`,
           },
-        })
+        }),
+        this.prisma.commission.update({
+          where: { id: c.id },
+          data: isFull ? { status: 'reversed' } : {},
+        }),
+      ])
 
-        let balanceDelta = new Prisma.Decimal(0)
-        let lifetimeDelta = new Prisma.Decimal(0)
-        const payout = commission.payoutItem?.payout
-        const reserved = !!payout && ['requested', 'approved'].includes(payout.status)
-        const irrevocable = commission.status === 'paid' || payout?.status === 'processing'
-
-        if (commission.status === 'payable' && !commission.payoutItem) {
-          balanceDelta = incrementalDelta
-          lifetimeDelta = incrementalDelta
-        } else if (irrevocable) {
-          // Provider processing/paid money cannot be silently reduced; create a
-          // negative available balance that is recovered from future earnings.
-          balanceDelta = incrementalDelta
-          lifetimeDelta = incrementalDelta
-        } else if (commission.status === 'locked' || reserved) {
-          // The original earning has already been removed from available balance
-          // as a payout reservation. Reduce the reservation, not the balance.
-          lifetimeDelta = incrementalDelta
-          if (commission.payoutItem && payout) {
-            const nextItemAmount = Prisma.Decimal.max(
-              new Prisma.Decimal(commission.payoutItem.amount).add(incrementalDelta),
-              new Prisma.Decimal(0),
-            )
-            const nextPayoutAmount = Prisma.Decimal.max(
-              new Prisma.Decimal(payout.amount).add(incrementalDelta),
-              new Prisma.Decimal(0),
-            )
-            await tx.payoutItem.update({
-              where: { id: commission.payoutItem.id },
-              data: { amount: nextItemAmount },
-            })
-            await tx.payout.update({
-              where: { id: payout.id },
-              data: {
-                amount: nextPayoutAmount,
-                ...(nextPayoutAmount.eq(0) ? { status: 'rejected' } : {}),
-              },
-            })
-          }
-        }
-
-        if (!balanceDelta.eq(0) || !lifetimeDelta.eq(0)) {
-          await tx.affiliateLedgerEntry.create({
-            data: {
-              organizationId: (await tx.affiliate.findUniqueOrThrow({ where: { id: commission.affiliateId } })).organizationId,
-              affiliateId: commission.affiliateId,
-              commissionId: commission.id,
-              payoutId: payout?.id,
-              type: 'commission_adjustment',
-              balanceDelta,
-              lifetimeDelta,
-              currency: commission.currency,
-              idempotencyKey: `ledger:${idempotencyKey}`,
-              description: `Refund adjustment for order ${order.id}`,
-              metadata: { cumulativeRefund: refund.toString() },
-            },
-          })
-          await tx.affiliate.update({
-            where: { id: commission.affiliateId },
-            data: {
-              availableBalance: { increment: balanceDelta },
-              lifetimeEarnings: { increment: lifetimeDelta },
-            },
-          })
-          await tx.affiliateBalance.upsert({
-            where: { affiliateId_currency: { affiliateId: commission.affiliateId, currency: commission.currency } },
-            create: {
-              organizationId: (await tx.affiliate.findUniqueOrThrow({ where: { id: commission.affiliateId } })).organizationId,
-              affiliateId: commission.affiliateId,
-              currency: commission.currency,
-              available: balanceDelta,
-              lifetime: lifetimeDelta,
-            },
-            update: {
-              available: { increment: balanceDelta },
-              lifetime: { increment: lifetimeDelta },
-            },
-          })
-        }
-
-        if (isFull) {
-          await tx.commission.update({ where: { id: commission.id }, data: { status: 'reversed' } })
-        }
+      // Proportionally adjust the sub-affiliate overrides tied to this commission.
+      const overrides = await this.prisma.commission.findMany({
+        where: { sourceCommissionId: c.id, status: { notIn: ['reversed', 'cancelled'] } },
       })
+      for (const o of overrides) {
+        const oDelta = new Prisma.Decimal(o.amount).mul(ratio).neg()
+        await this.prisma.$transaction([
+          this.prisma.commissionAdjustment.create({
+            data: {
+              commissionId: o.id,
+              type: isFull ? 'reversal' : 'partial_refund',
+              delta: oDelta,
+              reason: `Upline refund of ${refund.toString()} on order ${order.id}`,
+            },
+          }),
+          this.prisma.commission.update({
+            where: { id: o.id },
+            data: isFull ? { status: 'reversed' } : {},
+          }),
+        ])
+      }
     }
   }
 
   async list(organizationId: string, params: { affiliateId?: string; status?: string; skip?: number; take?: number }) {
-    const validStatuses = new Set(['pending', 'approved', 'locked', 'payable', 'paid', 'reversed', 'cancelled'])
-    if (params.status && !validStatuses.has(params.status)) throw new BadRequestException('Invalid commission status')
-    const skip = Number.isInteger(params.skip) ? Math.max(params.skip!, 0) : 0
-    const take = Number.isInteger(params.take) ? Math.min(Math.max(params.take!, 1), 100) : 25
     const where: Prisma.CommissionWhereInput = {
       affiliate: { organizationId },
       ...(params.affiliateId ? { affiliateId: params.affiliateId } : {}),
       ...(params.status ? { status: params.status as any } : {}),
     }
     const [items, total] = await this.prisma.$transaction([
-      this.prisma.commission.findMany({ where, skip, take, orderBy: { createdAt: 'desc' }, include: { adjustments: true } }),
+      this.prisma.commission.findMany({ where, skip: params.skip ?? 0, take: params.take ?? 25, orderBy: { createdAt: 'desc' }, include: { adjustments: true } }),
       this.prisma.commission.count({ where }),
     ])
     return { items, total }

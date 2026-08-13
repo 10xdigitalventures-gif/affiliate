@@ -4,9 +4,6 @@ import { PortalService } from './portal.service'
 import { TaxService } from '../tax/tax.service'
 import { TaxFormDto } from '../tax/dto/tax-form.dto'
 import { JwtPayload } from '../auth/jwt.strategy'
-import { AddPortalPayoutMethodDto, RequestPortalPayoutDto } from './dto/portal-payout.dto'
-import { CreatePortalLinkDto } from './dto/portal-link.dto'
-import { Throttle } from '@nestjs/throttler'
 
 // Affiliate portal — JWT only (no admin permissions required); data scoped to req.user.affiliateId.
 @Controller('portal')
@@ -22,22 +19,6 @@ export class PortalController {
   @Get('links')
   links(@Req() req: { user: JwtPayload }) {
     return this.portal.links(req.user.affiliateId)
-  }
-
-  @Throttle({ default: { ttl: 60_000, limit: 10 } })
-  @Post('links')
-  createLink(@Req() req: { user: JwtPayload }, @Body() dto: CreatePortalLinkDto) {
-    return this.portal.createLink(req.user.affiliateId, dto)
-  }
-
-  @Delete('links/:id')
-  deleteLink(@Req() req: { user: JwtPayload }, @Param('id') id: string) {
-    return this.portal.deleteLink(req.user.affiliateId, id)
-  }
-
-  @Get('coupons')
-  coupons(@Req() req: { user: JwtPayload }) {
-    return this.portal.coupons(req.user.affiliateId)
   }
 
   @Get('orders')
@@ -56,8 +37,8 @@ export class PortalController {
   }
 
   @Post('payouts/request')
-  requestPayout(@Req() req: { user: JwtPayload }, @Body() body: RequestPortalPayoutDto) {
-    return this.portal.requestPayout(req.user.affiliateId, body.method, body.currency)
+  requestPayout(@Req() req: { user: JwtPayload }, @Body() body: { method: string }) {
+    return this.portal.requestPayout(req.user.affiliateId, body.method)
   }
 
   @Get('payout-methods')
@@ -66,18 +47,13 @@ export class PortalController {
   }
 
   @Post('payout-methods')
-  addPayoutMethod(@Req() req: { user: JwtPayload }, @Body() body: AddPortalPayoutMethodDto) {
-    return this.portal.addPayoutMethod(req.user.affiliateId, body.method, body.details)
+  addPayoutMethod(@Req() req: { user: JwtPayload }, @Body() body: { method: string }) {
+    return this.portal.addPayoutMethod(req.user.affiliateId, body.method)
   }
 
   @Delete('payout-methods/:id')
   deletePayoutMethod(@Req() req: { user: JwtPayload }, @Param('id') id: string) {
     return this.portal.deletePayoutMethod(req.user.affiliateId, id)
-  }
-
-  @Post('payout-methods/:id/default')
-  setDefaultPayoutMethod(@Req() req: { user: JwtPayload }, @Param('id') id: string) {
-    return this.portal.setDefaultPayoutMethod(req.user.affiliateId, id)
   }
 
   @Get('tax')

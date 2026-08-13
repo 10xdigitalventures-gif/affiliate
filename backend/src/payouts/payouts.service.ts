@@ -1,5 +1,4 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common'
-import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { AuditService } from '../audit/audit.service'
 import { MailService } from '../mail/mail.service'
@@ -22,33 +21,6 @@ export class PayoutsService {
     private readonly providers: PayoutProviderService,
     private readonly tax: TaxService,
   ) {}
-
-  private validatePayoutDetails(method: string, input?: Record<string, unknown>): Record<string, string> {
-    const details = input ?? {}
-    const string = (key: string, required = false) => {
-      const value = typeof details[key] === 'string' ? details[key].trim() : ''
-      if (required && !value) throw new BadRequestException(`${key} is required for ${method} payouts`)
-      if (value.length > 500) throw new BadRequestException(`${key} is too long`)
-      return value
-    }
-    switch (method) {
-      case 'paypal': return { email: string('email', true) }
-      case 'stripe': return { accountId: string('accountId', true) }
-      case 'wise': return { recipientId: string('recipientId', true) }
-      case 'bank':
-        return {
-          accountHolder: string('accountHolder', true),
-          bankName: string('bankName', true),
-          accountNumber: string('accountNumber', true),
-          routingNumber: string('routingNumber'),
-          iban: string('iban'),
-          country: string('country', true),
-        }
-      case 'crypto': return { network: string('network', true), walletAddress: string('walletAddress', true) }
-      case 'manual': return { instructions: string('instructions', true) }
-      default: throw new BadRequestException('Unsupported payout method')
-    }
-  }
 
   /** Decrypt the affiliate's default payout-method destination details. */
   private async resolveDestination(affiliateId: string, method: string): Promise<Record<string, unknown>> {
@@ -74,31 +46,17 @@ export class PayoutsService {
     reference?: string | null,
   ) {
     const itemIds = payout.items.map((item) => item.id)
-    await this.prisma.$transaction(async (tx) => {
-      const claimed = await tx.payout.updateMany({
-        where: { id: payout.id, status: { in: ['approved', 'processing'] } },
+    await this.prisma.$transaction([
+      this.prisma.commission.updateMany({ where: { payoutItemId: { in: itemIds } }, data: { status: 'paid' } }),
+      this.prisma.affiliate.update({
+        where: { id: payout.affiliateId },
+        data: { availableBalance: { decrement: Number(payout.amount) } },
+      }),
+      this.prisma.payout.update({
+        where: { id: payout.id },
         data: { status: 'paid', transactionReference: reference ?? undefined },
-      })
-      if (claimed.count !== 1) throw new BadRequestException('Payout was already settled or changed concurrently')
-      await tx.commission.updateMany({
-        where: { payoutItemId: { in: itemIds }, status: 'locked' },
-        data: { status: 'paid' },
-      })
-      await tx.affiliateLedgerEntry.create({
-        data: {
-          organizationId,
-          affiliateId: payout.affiliateId,
-          payoutId: payout.id,
-          type: 'payout_paid',
-          balanceDelta: 0,
-          lifetimeDelta: 0,
-          currency: payout.currency ?? 'USD',
-          idempotencyKey: `payout-paid:${payout.id}`,
-          description: 'Reserved payout settled by provider',
-          metadata: reference ? { reference } : undefined,
-        },
-      })
-    })
+      }),
+    ])
     await this.audit.log({ organizationId, action: 'payout.paid', resourceType: 'payout', resourceId: payout.id, newValue: { status: 'paid', ref: reference } }).catch(() => {})
     this.prisma.affiliate.findUnique({ where: { id: payout.affiliateId }, include: { user: true } }).then((aff) => {
       if (!aff) return
@@ -129,58 +87,6 @@ export class PayoutsService {
     }).catch(() => {})
   }
 
-  /** Release a failed/rejected reservation exactly once. */
-  private async releasePayout(
-    organizationId: string,
-    payout: { id: string; affiliateId: string; amount: any; currency: string | null; status: string; items: { id: string }[] },
-    status: 'failed' | 'rejected',
-  ) {
-    const itemIds = payout.items.map((item) => item.id)
-    return this.prisma.$transaction(async (tx) => {
-      const changed = await tx.payout.updateMany({
-        where: { id: payout.id, status: { in: ['requested', 'approved', 'processing'] } },
-        data: { status },
-      })
-      if (changed.count !== 1) {
-        const current = await tx.payout.findUniqueOrThrow({ where: { id: payout.id } })
-        return current
-      }
-      await tx.commission.updateMany({
-        where: { payoutItemId: { in: itemIds }, status: 'locked' },
-        data: { status: 'payable', payoutItemId: null },
-      })
-      await tx.affiliate.update({
-        where: { id: payout.affiliateId },
-        data: { availableBalance: { increment: new Prisma.Decimal(payout.amount) } },
-      })
-      await tx.affiliateBalance.upsert({
-        where: { affiliateId_currency: { affiliateId: payout.affiliateId, currency: payout.currency ?? 'USD' } },
-        create: {
-          organizationId,
-          affiliateId: payout.affiliateId,
-          currency: payout.currency ?? 'USD',
-          available: payout.amount,
-          lifetime: 0,
-        },
-        update: { available: { increment: new Prisma.Decimal(payout.amount) } },
-      })
-      await tx.affiliateLedgerEntry.create({
-        data: {
-          organizationId,
-          affiliateId: payout.affiliateId,
-          payoutId: payout.id,
-          type: 'payout_released',
-          balanceDelta: payout.amount,
-          lifetimeDelta: 0,
-          currency: payout.currency ?? 'USD',
-          idempotencyKey: `payout-released:${payout.id}`,
-          description: `Payout reservation ${status}`,
-        },
-      })
-      return tx.payout.findUniqueOrThrow({ where: { id: payout.id } })
-    })
-  }
-
   /**
    * Admin: automatically process an approved payout through its provider
    * (Stripe / Wise). Non-automated methods return `processing` for manual settlement.
@@ -195,13 +101,8 @@ export class PayoutsService {
     if (payout.status !== 'approved')
       throw new BadRequestException(`Only approved payouts can be processed (current: ${payout.status})`)
 
-    // Compare-and-swap into processing so two admins/workers cannot send the
-    // same payout. Provider idempotency is defence-in-depth, not the lock.
-    const claimed = await this.prisma.payout.updateMany({
-      where: { id, organizationId, status: 'approved' },
-      data: { status: 'processing' },
-    })
-    if (claimed.count !== 1) throw new BadRequestException('Payout is already being processed')
+    // Lock into processing so it can't be double-sent.
+    await this.prisma.payout.update({ where: { id }, data: { status: 'processing' } })
 
     const destination = await this.resolveDestination(payout.affiliateId, payout.method)
     const result = await this.providers.send(payout.method, {
@@ -213,7 +114,7 @@ export class PayoutsService {
     })
 
     if (result.status === 'failed') {
-      await this.releasePayout(organizationId, { ...payout, status: 'processing' }, 'failed')
+      await this.prisma.payout.update({ where: { id }, data: { status: 'failed' } })
       await this.audit.log({ organizationId, action: 'payout.process_failed', resourceType: 'payout', resourceId: id, newValue: { error: result.error } }).catch(() => {})
       throw new BadRequestException(`Payout failed: ${result.error ?? 'provider error'}`)
     }
@@ -230,8 +131,6 @@ export class PayoutsService {
 
   /** Admin: list all payouts in org, optionally filtered by status. */
   async list(organizationId: string, status?: string) {
-    const validStatuses = new Set(['requested', 'approved', 'processing', 'paid', 'failed', 'rejected'])
-    if (status && !validStatuses.has(status)) throw new BadRequestException('Invalid payout status')
     return this.prisma.payout.findMany({
       where: {
         organizationId,
@@ -266,105 +165,49 @@ export class PayoutsService {
    *   2. Update each commission.payoutItemId to the created item id
    */
   async createBatch(organizationId: string, dto: CreatePayoutBatchDto) {
-    await this.tax.assertPayoutAllowed(organizationId, dto.affiliateId)
-    const organization = await this.prisma.organization.findUnique({ where: { id: organizationId } })
-    if (!organization) throw new NotFoundException('Organization not found')
-    return this.createClaimedPayout(organizationId, dto.affiliateId, dto.method, dto.currency ?? organization.defaultCurrency)
-  }
+    const affiliate = await this.prisma.affiliate.findFirst({
+      where: { id: dto.affiliateId, organizationId },
+    })
+    if (!affiliate) throw new NotFoundException('Affiliate not found')
 
-  private async createClaimedPayout(
-    organizationId: string,
-    affiliateId: string,
-    method: string,
-    currency: string,
-  ) {
-    const normalizedCurrency = currency.trim().toUpperCase()
-    if (!/^[A-Z]{3}$/.test(normalizedCurrency)) throw new BadRequestException('Currency must be a three-letter ISO code')
+    const currency = dto.currency ?? 'USD'
+    const commissions = await this.prisma.commission.findMany({
+      where: { affiliateId: dto.affiliateId, status: 'payable', currency, payoutItemId: null },
+    })
+    if (commissions.length === 0)
+      throw new BadRequestException('No payable commissions found for this affiliate')
 
-    return this.prisma.$transaction(async (tx) => {
-      const affiliate = await tx.affiliate.findFirst({ where: { id: affiliateId, organizationId, status: 'approved' } })
-      if (!affiliate) throw new NotFoundException('Active affiliate not found')
-      const destination = await tx.payoutMethodRecord.findFirst({
-        where: { affiliateId, method: method as any },
-        orderBy: { isDefault: 'desc' },
-      })
-      if (!destination) throw new BadRequestException('Add payout destination details before requesting this method')
+    const total = commissions.reduce((s, c) => s + Number(c.amount), 0)
 
-      const commissions = await tx.commission.findMany({
-        where: { affiliateId, status: 'payable', currency: normalizedCurrency, payoutItemId: null },
-        include: { adjustments: true },
-        orderBy: { createdAt: 'asc' },
-      })
-      const claimable = commissions
-        .map((commission) => ({
-          commission,
-          amount: Prisma.Decimal.max(
-            new Prisma.Decimal(commission.amount).add(
-              commission.adjustments.reduce((sum, adjustment) => sum.add(adjustment.delta), new Prisma.Decimal(0)),
-            ),
-            new Prisma.Decimal(0),
-          ).toDecimalPlaces(4),
-        }))
-        .filter((item) => item.amount.gt(0))
-      if (!claimable.length) throw new BadRequestException('No payable commissions found for this affiliate')
+    // Create payout + one PayoutItem per commission
+    const payout = await this.prisma.payout.create({
+      data: {
+        organizationId,
+        affiliateId: dto.affiliateId,
+        amount: total,
+        currency,
+        method: dto.method,
+        status: 'requested',
+        items: { create: commissions.map((c) => ({ amount: c.amount })) },
+      },
+      include: {
+        items: true,
+        affiliate: { select: { affiliateCode: true } },
+        _count: { select: { items: true } },
+      },
+    })
 
-      const total = claimable.reduce((sum, item) => sum.add(item.amount), new Prisma.Decimal(0)).toDecimalPlaces(4)
-      const balanceClaim = await tx.affiliateBalance.updateMany({
-        where: { affiliateId, organizationId, currency: normalizedCurrency, available: { gte: total } },
-        data: { available: { decrement: total } },
-      })
-      if (balanceClaim.count !== 1) {
-        throw new BadRequestException('Available balance is lower than the payable commission total')
-      }
-      // Deprecated aggregate cache retained for v5 clients; v6 reads the
-      // currency-specific AffiliateBalance rows.
-      await tx.affiliate.update({
-        where: { id: affiliateId },
-        data: { availableBalance: { decrement: total } },
-      })
+    // Link each commission to its payout item by index
+    await Promise.all(
+      commissions.map((c, i) =>
+        this.prisma.commission.update({
+          where: { id: c.id },
+          data: { payoutItemId: payout.items[i].id },
+        }),
+      ),
+    )
 
-      const payout = await tx.payout.create({
-        data: {
-          organizationId,
-          affiliateId,
-          amount: total,
-          currency: normalizedCurrency,
-          method: method as any,
-          status: 'requested',
-        },
-      })
-      for (const item of claimable) {
-        const payoutItem = await tx.payoutItem.create({
-          data: { payoutId: payout.id, amount: item.amount },
-        })
-        const claimed = await tx.commission.updateMany({
-          where: { id: item.commission.id, status: 'payable', payoutItemId: null },
-          data: { status: 'locked', payoutItemId: payoutItem.id },
-        })
-        if (claimed.count !== 1) throw new BadRequestException('A commission was claimed concurrently; retry')
-      }
-      await tx.affiliateLedgerEntry.create({
-        data: {
-          organizationId,
-          affiliateId,
-          payoutId: payout.id,
-          type: 'payout_reserved',
-          balanceDelta: total.neg(),
-          lifetimeDelta: 0,
-          currency: normalizedCurrency,
-          idempotencyKey: `payout-reserved:${payout.id}`,
-          description: 'Payable commissions reserved for payout',
-        },
-      })
-      return tx.payout.findUniqueOrThrow({
-        where: { id: payout.id },
-        include: {
-          items: true,
-          affiliate: { select: { affiliateCode: true } },
-          _count: { select: { items: true } },
-        },
-      })
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })
+    return payout
   }
 
   /** Admin: approve a payout (requested -> approved). */
@@ -373,12 +216,7 @@ export class PayoutsService {
     if (!payout) throw new NotFoundException('Payout not found')
     if (payout.status !== 'requested')
       throw new BadRequestException(`Cannot approve payout in status ${payout.status}`)
-    const claimed = await this.prisma.payout.updateMany({
-      where: { id, organizationId, status: 'requested' },
-      data: { status: 'approved' },
-    })
-    if (claimed.count !== 1) throw new BadRequestException('Payout changed concurrently')
-    const updated = await this.prisma.payout.findUniqueOrThrow({ where: { id } })
+    const updated = await this.prisma.payout.update({ where: { id }, data: { status: 'approved' } })
     await this.audit.log({ organizationId, action: 'payout.approve', resourceType: 'payout', resourceId: id, oldValue: { status: 'requested' }, newValue: { status: 'approved' } }).catch(() => {})
     return updated
   }
@@ -402,11 +240,11 @@ export class PayoutsService {
 
   /** Admin: mark a payout as failed. */
   async fail(id: string, organizationId: string) {
-    const payout = await this.prisma.payout.findFirst({ where: { id, organizationId }, include: { items: true } })
+    const payout = await this.prisma.payout.findFirst({ where: { id, organizationId } })
     if (!payout) throw new NotFoundException('Payout not found')
     if (!['requested', 'approved'].includes(payout.status))
       throw new BadRequestException(`Cannot fail a payout in status ${payout.status}`)
-    return this.releasePayout(organizationId, payout, 'failed')
+    return this.prisma.payout.update({ where: { id }, data: { status: 'failed' } })
   }
 
   // Portal: affiliate self-service
@@ -421,24 +259,37 @@ export class PayoutsService {
   }
 
   /** Affiliate: request a payout from payable commissions. */
-  async requestPayout(affiliateId: string, organizationId: string, method: string, currency?: string) {
+  async requestPayout(affiliateId: string, organizationId: string, method: string, currency = 'USD') {
     await this.tax.assertPayoutAllowed(organizationId, affiliateId)
-    const payoutMethod = await this.prisma.payoutMethodRecord.findFirst({
-      where: { affiliateId, method: method as any },
-      select: { id: true },
+    const commissions = await this.prisma.commission.findMany({
+      where: { affiliateId, status: 'payable', currency, payoutItemId: null },
     })
-    if (!payoutMethod) {
-      throw new BadRequestException(`Add and save a ${method} payout method before requesting a payout`)
-    }
-    const organization = await this.prisma.organization.findUnique({ where: { id: organizationId } })
-    if (!organization) throw new NotFoundException('Organization not found')
-    const payout = await this.createClaimedPayout(
-      organizationId,
-      affiliateId,
-      method,
-      currency ?? organization.defaultCurrency,
+    if (commissions.length === 0)
+      throw new BadRequestException('No payable commissions available')
+
+    const total = commissions.reduce((s, c) => s + Number(c.amount), 0)
+    const payout = await this.prisma.payout.create({
+      data: {
+        organizationId,
+        affiliateId,
+        amount: total,
+        currency,
+        method: method as any,
+        status: 'requested',
+        items: { create: commissions.map((c) => ({ amount: c.amount })) },
+      },
+      include: { items: true },
+    })
+
+    await Promise.all(
+      commissions.map((c, i) =>
+        this.prisma.commission.update({
+          where: { id: c.id },
+          data: { payoutItemId: payout.items[i].id },
+        }),
+      ),
     )
-    return { id: payout.id, amount: Number(payout.amount), currency: payout.currency, status: payout.status }
+    return { id: payout.id, amount: total, currency, status: 'requested' }
   }
 
   // Payout Method Records
@@ -451,26 +302,14 @@ export class PayoutsService {
   }
 
   async addPayoutMethod(affiliateId: string, method: string, details?: Record<string, unknown>) {
-    const safeDetails = this.validatePayoutDetails(method, details)
-    const detailsEnc = this.crypto.encrypt(JSON.stringify(safeDetails))
-    const existing = await this.prisma.payoutMethodRecord.findFirst({ where: { affiliateId, method: method as any } })
-    if (existing) {
-      return this.prisma.payoutMethodRecord.update({
-        where: { id: existing.id },
-        data: { detailsEnc },
-        select: { id: true, method: true, isDefault: true },
-      })
-    }
-    const existingCount = await this.prisma.payoutMethodRecord.count({ where: { affiliateId } })
+    const detailsEnc = details ? Buffer.from(JSON.stringify(details)) : undefined
     return this.prisma.payoutMethodRecord.create({
-      data: { affiliateId, method: method as any, detailsEnc, isDefault: existingCount === 0 },
+      data: { affiliateId, method: method as any, detailsEnc, isDefault: false },
       select: { id: true, method: true, isDefault: true },
     })
   }
 
   async setDefaultPayoutMethod(affiliateId: string, recordId: string) {
-    const record = await this.prisma.payoutMethodRecord.findFirst({ where: { id: recordId, affiliateId } })
-    if (!record) throw new NotFoundException('Payout method not found')
     await this.prisma.payoutMethodRecord.updateMany({ where: { affiliateId }, data: { isDefault: false } })
     return this.prisma.payoutMethodRecord.update({
       where: { id: recordId },

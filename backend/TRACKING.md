@@ -26,19 +26,13 @@ Drop on any landing page (no redirect link needed):
 
 ```html
 <!-- Image beacon -->
-<img src="https://api.example.com/v1/track/pixel.gif?ref=ABAAN001&org=YOUR_ORGANIZATION_ID&utm_source=blog" width="1" height="1" alt="" />
+<img src="https://api.example.com/v1/track/pixel.gif?ref=ABAAN001&utm_source=blog" width="1" height="1" alt="" />
 
 <!-- Or JS beacon -->
-<script src="https://api.example.com/track.js"
-        data-api="https://api.example.com/v1"
-        data-org="YOUR_ORGANIZATION_ID"
-        data-ref="ABAAN001"></script>
+<script src="https://api.example.com/track.js" data-ref="ABAAN001"></script>
 ```
 
-A ready snippet is shipped at `web/public/track.js`. It posts to `/track/click`
-when CORS permits and automatically falls back to the no-CORS pixel beacon on
-external storefronts. Include `data-org`; referral codes are tenant-scoped and
-an omitted organization is accepted only when the code is globally unambiguous.
+A ready snippet is shipped at `web/public/track.js` (posts to `/track/click`).
 
 ## Postback (server-to-server)
 

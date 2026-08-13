@@ -1,5 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common'
-import { randomBytes } from 'node:crypto'
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { CreateAffiliateDto } from './dto/create-affiliate.dto'
 import { EntitlementsService } from '../entitlements/entitlements.service'
@@ -12,24 +11,16 @@ export class AffiliatesService {
   ) {}
 
   private randomCode() {
-    return randomBytes(5).toString('hex').slice(0, 8).toUpperCase()
-  }
-
-  private isUniqueConflict(error: unknown) {
-    return !!error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'P2002'
+    return Math.random().toString(36).slice(2, 8).toUpperCase()
   }
 
   async list(organizationId: string, params: { status?: string; skip?: number; take?: number }) {
-    const validStatuses = new Set(['pending', 'approved', 'suspended', 'rejected'])
-    if (params.status && !validStatuses.has(params.status)) throw new BadRequestException('Invalid affiliate status')
-    const skip = Number.isInteger(params.skip) ? Math.max(params.skip!, 0) : 0
-    const take = Number.isInteger(params.take) ? Math.min(Math.max(params.take!, 1), 100) : 25
     const where = { organizationId, ...(params.status ? { status: params.status as any } : {}) }
     const [items, total] = await this.prisma.$transaction([
       this.prisma.affiliate.findMany({
         where,
-        skip,
-        take,
+        skip: params.skip ?? 0,
+        take: params.take ?? 25,
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.affiliate.count({ where }),
@@ -45,28 +36,15 @@ export class AffiliatesService {
 
   async create(organizationId: string, dto: CreateAffiliateDto) {
     await this.entitlements.assertWithinLimit(organizationId, 'affiliates')
-    const requestedCode = dto.affiliateCode?.trim().toUpperCase()
-    const requestedSlug = dto.referralSlug?.trim().toLowerCase()
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const code = requestedCode || this.randomCode()
-      try {
-        return await this.prisma.affiliate.create({
-          data: {
-            organizationId,
-            affiliateCode: code,
-            referralSlug: requestedSlug || code.toLowerCase(),
-            status: 'pending',
-          },
-        })
-      } catch (error) {
-        if (!this.isUniqueConflict(error)) throw error
-        if (requestedCode || requestedSlug) {
-          throw new ConflictException('Affiliate code or referral slug is already in use')
-        }
-        if (attempt === 4) throw new ConflictException('Could not allocate a unique affiliate code')
-      }
-    }
-    throw new ConflictException('Could not allocate a unique affiliate code')
+    const code = dto.affiliateCode || this.randomCode()
+    return this.prisma.affiliate.create({
+      data: {
+        organizationId,
+        affiliateCode: code,
+        referralSlug: dto.referralSlug || code.toLowerCase(),
+        status: 'pending',
+      },
+    })
   }
 
   async approve(organizationId: string, id: string) {
@@ -90,8 +68,8 @@ export class AffiliatesService {
         if (cursor === id) throw new BadRequestException('That parent would create a cycle in the upline')
         if (seen.has(cursor)) break
         seen.add(cursor)
-        const node: { parentAffiliateId: string | null } | null = await this.prisma.affiliate.findFirst({
-          where: { id: cursor, organizationId },
+        const node: { parentAffiliateId: string | null } | null = await this.prisma.affiliate.findUnique({
+          where: { id: cursor },
           select: { parentAffiliateId: true },
         })
         cursor = node?.parentAffiliateId ?? null

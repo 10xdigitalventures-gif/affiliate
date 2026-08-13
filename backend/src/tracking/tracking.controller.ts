@@ -1,24 +1,11 @@
 import { Body, Controller, Get, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common'
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger'
 import type { Request, Response } from 'express'
-import { Transform } from 'class-transformer'
-import {
-  IsEmail,
-  IsIn,
-  IsNumber,
-  IsOptional,
-  IsString,
-  IsUUID,
-  Length,
-  Max,
-  MaxLength,
-  Min,
-} from 'class-validator'
+import { IsNumber, IsOptional, IsString } from 'class-validator'
 import { ApiKeyGuard } from '../common/guards/apikey.guard'
 import { TrackingService } from './tracking.service'
 import { OrdersService } from '../orders/orders.service'
 import { classifyChannel } from '../common/attribution/channel'
-import { TrackClickDto } from './dto/track-click.dto'
 
 const COOKIE_NAME = 'aff_ref'
 const CLICK_COOKIE = 'aff_click'
@@ -31,31 +18,24 @@ const PIXEL = Buffer.from(
 )
 
 class PostbackDto {
-  @IsOptional() @IsString() @MaxLength(64) referralCode?: string
-  @IsOptional() @IsString() @MaxLength(64) clickId?: string
-  @IsString() @MaxLength(128) externalId!: string
-  @IsUUID() storeId!: string
-  @IsOptional() @IsNumber() @Min(0) @Max(1_000_000_000_000) amount?: number
-  @IsOptional()
-  @Transform(({ value }) => typeof value === 'string' ? value.trim().toUpperCase() : value)
-  @IsString()
-  @Length(3, 3)
-  currency?: string
-  @IsOptional() @IsString() @MaxLength(128) couponCode?: string
-  @IsOptional() @IsEmail() @MaxLength(320) customerEmail?: string
-  @IsOptional() @IsIn(['paid', 'organic']) channel?: 'paid' | 'organic'
-  @IsOptional() @IsString() @MaxLength(64) adNetwork?: string
-  @IsOptional() @IsIn(['link', 'code']) attributionType?: 'link' | 'code'
+  @IsOptional() @IsString() referralCode?: string
+  @IsOptional() @IsString() clickId?: string
+  @IsString() externalId!: string
+  @IsOptional() @IsString() storeId?: string
+  @IsOptional() @IsNumber() amount?: number
+  @IsOptional() @IsString() currency?: string
+  @IsOptional() @IsString() couponCode?: string
+  @IsOptional() @IsString() customerEmail?: string
+  @IsOptional() @IsString() channel?: 'paid' | 'organic' | string
+  @IsOptional() @IsString() adNetwork?: string
+  @IsOptional() @IsString() attributionType?: 'link' | 'code' | string
 }
 
 function clientIp(req: Request): string | undefined {
-  // Express derives req.ip using the explicit trust-proxy policy configured in
-  // main.ts. Reading x-forwarded-for directly would trust attacker input when
-  // the API is reachable without Cloudflare/nginx.
-  return req.ip || req.socket.remoteAddress || undefined
+  return (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || undefined
 }
 
-function utmFromQuery(q: Record<string, string | undefined>) {
+function utmFromQuery(q: Record<string, string>) {
   return {
     source: q.utm_source,
     medium: q.utm_medium,
@@ -85,13 +65,11 @@ export class TrackingController {
     channel?: { channel: string; adNetwork?: string },
   ) {
     const maxAge = this.windowMs()
-    const secure = process.env.NODE_ENV === 'production' || process.env.COOKIE_SECURE === 'true'
-    const options = { maxAge, httpOnly: false, sameSite: 'lax' as const, secure }
-    res.cookie(COOKIE_NAME, affiliateCode, options)
-    if (clickId) res.cookie(CLICK_COOKIE, clickId, options)
+    res.cookie(COOKIE_NAME, affiliateCode, { maxAge, httpOnly: false, sameSite: 'lax' })
+    if (clickId) res.cookie(CLICK_COOKIE, clickId, { maxAge, httpOnly: false, sameSite: 'lax' })
     if (channel) {
-      res.cookie(CHANNEL_COOKIE, channel.channel, options)
-      if (channel.adNetwork) res.cookie('aff_adnet', channel.adNetwork, options)
+      res.cookie(CHANNEL_COOKIE, channel.channel, { maxAge, httpOnly: false, sameSite: 'lax' })
+      if (channel.adNetwork) res.cookie('aff_adnet', channel.adNetwork, { maxAge, httpOnly: false, sameSite: 'lax' })
     }
   }
 
@@ -163,16 +141,16 @@ export class TrackingController {
   async click(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
-    @Body() body: TrackClickDto,
+    @Body() body: { ref?: string; org?: string; u?: string } & Record<string, string>,
   ) {
-    const params = body as unknown as Record<string, string | undefined>
-    const ch = classifyChannel({ utm: utmFromQuery(params), params })
+    if (!body.ref) return { ok: false }
+    const ch = classifyChannel({ utm: utmFromQuery(body), params: body })
     const result = await this.tracking.recordPixelClick(body.org ?? null, body.ref, {
       ip: clientIp(req),
       userAgent: req.headers['user-agent'],
       landingPage: body.u || (req.headers['referer'] as string),
-      utm: utmFromQuery(params),
-      params,
+      utm: utmFromQuery(body),
+      params: body,
     })
     if (!result) return { ok: false }
     this.setAttributionCookies(res, result.affiliateCode, result.clickId, { channel: ch.channel, adNetwork: ch.adNetwork })
@@ -198,7 +176,7 @@ export class TrackingController {
     }
     const amount = typeof dto.amount === 'number' ? dto.amount : 0
     const result = await this.orders.ingest(req.user.organizationId, {
-      storeId: dto.storeId,
+      storeId: dto.storeId ?? '',
       externalOrderId: dto.externalId,
       subtotal: amount,
       total: amount,

@@ -31,7 +31,7 @@ export class ApiKeysService {
     const record = await this.prisma.apiKey.create({
       data: {
         organizationId,
-        name: dto.name.trim(),
+        name: dto.name,
         keyHash: hash,
         scopes: dto.scopes ?? ['orders.write'],
       },
@@ -71,21 +71,8 @@ export class ApiKeysService {
   async verify(rawKey: string) {
     if (!rawKey.startsWith(PREFIX)) throw new UnauthorizedException('Invalid API key')
     const hash = hashKey(rawKey)
-    const record = await this.prisma.apiKey.findFirst({
-      where: { keyHash: hash },
-      include: { organization: true },
-    })
+    const record = await this.prisma.apiKey.findFirst({ where: { keyHash: hash } })
     if (!record) throw new UnauthorizedException('Invalid API key')
-    if (record.organization.status === 'suspended') {
-      throw new UnauthorizedException('Workspace is suspended')
-    }
-    // Re-check the live subscription on every use. This closes the downgrade
-    // bypass where an API key created on a paid plan remained usable forever.
-    try {
-      await this.entitlements.assertFeature(record.organizationId, 'apiAccess')
-    } catch {
-      throw new UnauthorizedException('API access is not enabled for this workspace')
-    }
     // Fire-and-forget lastUsedAt update
     this.prisma.apiKey.update({ where: { id: record.id }, data: { lastUsedAt: new Date() } }).catch(() => {})
     return record

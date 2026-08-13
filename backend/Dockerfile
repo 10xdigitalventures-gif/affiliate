@@ -1,35 +1,28 @@
-FROM node:22-alpine AS base
+# ─── Build stage ───────────────────────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
 WORKDIR /app
-ENV NODE_ENV=production
-ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
-FROM base AS build
-ENV NODE_ENV=development
-COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
-COPY prisma ./prisma
+COPY package*.json ./
+RUN npm ci --legacy-peer-deps
+
+COPY . .
 RUN npx prisma generate
-COPY tsconfig.json tsconfig.build.json nest-cli.json ./
-COPY src ./src
-COPY scripts ./scripts
-RUN npm run build \
-  && test -f dist/main.js \
-  && test -f dist/app.module.js \
-  && test -f dist/auth/auth.module.js
+RUN npm run build
 
-# Tooling image is short-lived and used only for migrations/admin bootstrap.
-FROM build AS tools
+# ─── Production stage ─────────────────────────────────────────────────────────────────────
+FROM node:20-alpine AS runner
+WORKDIR /app
 
-FROM build AS production-deps
-RUN npm prune --omit=dev --no-audit --no-fund
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nestjs
 
-FROM base AS runner
-RUN addgroup --system --gid 1001 nodejs \
-  && adduser --system --uid 1001 --ingroup nodejs nestjs
-COPY --from=production-deps --chown=nestjs:nodejs /app/node_modules ./node_modules
-COPY --from=build --chown=nestjs:nodejs /app/dist ./dist
-COPY --from=build --chown=nestjs:nodejs /app/prisma ./prisma
-COPY --from=build --chown=nestjs:nodejs /app/package.json ./package.json
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/package.json ./package.json
+
 USER nestjs
-EXPOSE 4100
-CMD ["node", "dist/main.js"]
+EXPOSE 4000
+
+# Run migrations then start
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]

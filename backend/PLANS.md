@@ -99,6 +99,5 @@ isPrimary). Flow:
 - `prisma/migrations/20260712_plans_entitlements/migration.sql` — `Plan`, `Subscription`,
   `User.isSuperAdmin`, enums.
 - `prisma/migrations/20260713_custom_domains/migration.sql` — `Domain` + enum.
-- `prisma/seed.ts` — idempotently seeds the three default packages, assigns the
-  supplied organization to Enterprise and prepares the operator-supplied
-  super-admin email. It has no built-in password.
+- `prisma/seed.ts` — seeds the three default packages, puts the demo org on Enterprise, and
+  makes `admin@demo.test` a super admin.

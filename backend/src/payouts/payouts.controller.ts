@@ -1,12 +1,12 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard'
-import { PermissionsGuard, RequirePermissions } from '../common/guards/permissions.guard'
+import { RequirePermissions } from '../common/guards/permissions.guard'
 import { PayoutsService } from './payouts.service'
 import { CreatePayoutBatchDto, FailDto, MarkPaidDto } from './dto/payout.dto'
 import { JwtPayload } from '../auth/jwt.strategy'
 
 @Controller('payouts')
-@UseGuards(JwtAuthGuard, PermissionsGuard)
+@UseGuards(JwtAuthGuard)
 export class PayoutsController {
   constructor(private readonly payouts: PayoutsService) {}
 

@@ -29,6 +29,20 @@ export function initSentry(): boolean {
             delete event.request.headers['x-api-key']
             delete event.request.headers.cookie
           }
+          // Credentials should never reach a URL, but redact rather than ship
+          // them if a caller puts one there anyway.
+          const SECRET_PARAMS = ['apiKey', 'api_key', 'token', 'access_token', 'refresh_token']
+          if (event.request?.query_string && typeof event.request.query_string === 'string') {
+            const params = new URLSearchParams(event.request.query_string)
+            for (const p of SECRET_PARAMS) if (params.has(p)) params.set(p, '[redacted]')
+            event.request.query_string = params.toString()
+          }
+          if (typeof event.request?.url === 'string' && event.request.url.includes('?')) {
+            const [path, qs] = event.request.url.split('?')
+            const params = new URLSearchParams(qs)
+            for (const p of SECRET_PARAMS) if (params.has(p)) params.set(p, '[redacted]')
+            event.request.url = `${path}?${params.toString()}`
+          }
         } catch {
           /* ignore */
         }

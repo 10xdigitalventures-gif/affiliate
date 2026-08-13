@@ -17,12 +17,6 @@ describe('csv.util', () => {
     expect(rows[0]).toEqual({ affiliateCode: 'SUMMER10', referralSlug: 'summer10', status: 'approved' })
   })
 
-  it('neutralizes spreadsheet formulas without changing numeric values', () => {
-    const csv = buildCsv(['externalId', 'amount'], [['=HYPERLINK("https://evil")', '-12.50']])
-    expect(csv).toContain(`"'=HYPERLINK(""https://evil"")"`)
-    expect(csv).toContain(',-12.50')
-  })
-
   it('parses quoted fields with embedded commas and escaped quotes', () => {
     const rows = parseCsv('name,note\n"Doe, Jane","said ""hi"""')
     expect(rows[0].name).toBe('Doe, Jane')

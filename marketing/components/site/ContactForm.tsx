@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import { site } from '@/lib/site'
 
 export function ContactForm() {
   const [sent, setSent] = useState(false)
@@ -12,15 +11,7 @@ export function ContactForm() {
 
   function onSubmit(e: React.FormEvent) {
     e.preventDefault()
-    const subject = `10x Affiliate enquiry${form.company ? ` — ${form.company}` : ''}`
-    const body = [
-      `Name: ${form.name}`,
-      `Email: ${form.email}`,
-      form.company ? `Company: ${form.company}` : '',
-      '',
-      form.message,
-    ].filter(Boolean).join('\n')
-    window.location.href = `mailto:${site.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
+    // Wire this to your backend / CRM endpoint at deploy time.
     setSent(true)
   }
 
@@ -28,9 +19,7 @@ export function ContactForm() {
     return (
       <div className="rounded-2xl border border-line bg-brand-50 p-8 text-center">
         <h3 className="text-lg font-bold text-ink">Thanks, {form.name || 'there'}! {'\uD83D\uDC4B'}</h3>
-        <p className="mt-2 text-sm text-muted">
-          Your email app has been opened with the message prepared. Send it to {site.email} to complete your enquiry.
-        </p>
+        <p className="mt-2 text-sm text-muted">We have received your message and will get back to you within one business day.</p>
       </div>
     )
   }

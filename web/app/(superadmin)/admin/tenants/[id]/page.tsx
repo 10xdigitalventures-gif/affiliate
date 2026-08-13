@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { SuperAdmin, Billing, BillingInvoice, GatewayConfig, FEATURE_CATALOG, LIMIT_CATALOG } from '@/lib/api'
+import { SuperAdmin, Billing, BillingInvoice, GatewayConfig } from '@/lib/api'
 import { useFetch, shortDate, money } from '@/lib/use-fetch'
 import { PageHeader } from '@/components/ui/page-header'
 import { Card } from '@/components/ui/card'
@@ -16,14 +16,13 @@ export default function TenantDetailPage() {
   const tenant = useFetch(() => SuperAdmin.tenant(id), [id])
   const plansQ = useFetch(() => SuperAdmin.plans(), [])
   const [planId, setPlanId] = useState('')
-  const [subscriptionStatus, setSubscriptionStatus] = useState<'active' | 'trialing'>('active')
   const [busy, setBusy] = useState(false)
   const t = tenant.data
 
   async function assign() {
     if (!planId) return
     setBusy(true)
-    try { await SuperAdmin.assignPlan(id, { planId, status: subscriptionStatus }); tenant.reload() } finally { setBusy(false) }
+    try { await SuperAdmin.assignPlan(id, { planId }); tenant.reload() } finally { setBusy(false) }
   }
   async function toggleStatus() {
     if (!t) return
@@ -69,7 +68,7 @@ export default function TenantDetailPage() {
           )}
         </Card>
         <Card title="Assign / change plan">
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex items-center gap-1.5">
             <select
               value={planId}
               onChange={(e) => setPlanId(e.target.value)}
@@ -80,36 +79,9 @@ export default function TenantDetailPage() {
                 <option key={p.id} value={p.id}>{p.name} - {money(p.priceCents / 100)}/{p.interval}</option>
               ))}
             </select>
-            <select value={subscriptionStatus} onChange={(e) => setSubscriptionStatus(e.target.value as 'active' | 'trialing')} className="rounded-md border border-line px-2.5 py-1 text-xs outline-none focus:border-brand">
-              <option value="active">Active</option>
-              <option value="trialing">Trial</option>
-            </select>
             <Button onClick={assign} disabled={!planId || busy}>Assign</Button>
           </div>
           <p className="mt-2 text-2xs text-muted">Assigning a plan creates or updates the tenant subscription and applies its entitlements immediately.</p>
-        </Card>
-      </div>
-      <div className="mt-2 grid gap-2 lg:grid-cols-2">
-        <Card title="Plan limits & current usage">
-          <div className="space-y-2">
-            {LIMIT_CATALOG.map((limit) => {
-              const max = t.entitlements?.limits?.[limit.key] ?? 0
-              const used = t.usage?.[limit.key]
-              const percent = typeof used === 'number' && max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0
-              return <div key={limit.key}>
-                <div className="flex justify-between gap-2 text-xs"><span>{limit.label}</span><span className="tabular-nums text-muted">{typeof used === 'number' ? `${used} / ` : ''}{max === -1 ? 'Unlimited' : max}</span></div>
-                {typeof used === 'number' && max > 0 && <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100"><div className="h-full rounded-full bg-brand" style={{ width: `${percent}%` }} /></div>}
-              </div>
-            })}
-          </div>
-        </Card>
-        <Card title="Enabled plan options">
-          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-            {FEATURE_CATALOG.map((feature) => {
-              const enabled = t.entitlements?.features?.[feature.key] === true
-              return <div key={feature.key} className={`rounded-md border px-2 py-1.5 text-xs ${enabled ? 'border-success/30 bg-success/5 text-ink' : 'border-line text-muted'}`}><span className={enabled ? 'text-success' : ''}>{enabled ? '✓' : '—'}</span> {feature.label}</div>
-            })}
-          </div>
         </Card>
       </div>
       <div className="mt-2">

@@ -22,7 +22,7 @@ describe('CommissionsService — multi-tier overrides', () => {
           opts.approved.has(where.id) ? { id: where.id } : null,
       },
       commission: {
-        upsert: async ({ create: data }: any) => {
+        create: async ({ data }: any) => {
           created.push(data)
           return { id: `c_${created.length}`, ...data }
         },
@@ -31,8 +31,7 @@ describe('CommissionsService — multi-tier overrides', () => {
     const audit: any = { log: async () => {} }
     const mail: any = { send: async () => {} }
     const notifications: any = { notifyUser: async () => null, notifyOrgAdmins: async () => 0 }
-    const entitlements: any = { can: async () => true }
-    const svc = new CommissionsService(prisma, audit, mail, notifications, entitlements)
+    const svc = new CommissionsService(prisma, audit, mail, notifications)
     return { svc, created }
   }
 

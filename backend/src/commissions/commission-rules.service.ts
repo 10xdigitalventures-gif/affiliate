@@ -67,9 +67,6 @@ export class CommissionRulesService {
     } else if (scope === 'affiliate') {
       const a = await this.prisma.affiliate.findFirst({ where: { id: scopeRefId, organizationId }, select: { id: true } })
       if (!a) throw new BadRequestException('Unknown affiliate for this organization')
-    } else if (scope === 'campaign') {
-      const campaign = await this.prisma.campaign.findFirst({ where: { id: scopeRefId, organizationId }, select: { id: true } })
-      if (!campaign) throw new BadRequestException('Unknown campaign for this organization')
     }
   }
 }

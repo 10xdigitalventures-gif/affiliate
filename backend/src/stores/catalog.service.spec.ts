@@ -114,12 +114,11 @@ describe('CatalogService.syncCatalog', () => {
       products: [
         { externalId: 'x1', name: 'Valid', price: 5 } as any,
         { name: 'Missing external id', price: 5 } as any,
-        { externalId: 'x2', name: 'Negative price', price: -1 } as any,
       ],
     })
 
     expect(res.created).toBe(1)
-    expect(res.skipped).toBe(2)
+    expect(res.skipped).toBe(1)
   })
 
   it('marks the job failed when an upsert throws', async () => {

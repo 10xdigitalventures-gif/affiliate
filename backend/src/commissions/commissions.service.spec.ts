@@ -6,7 +6,6 @@ import { PrismaService } from '../prisma/prisma.service'
 import { AuditService } from '../audit/audit.service'
 import { MailService } from '../mail/mail.service'
 import { NotificationsService } from '../notifications/notifications.service'
-import { EntitlementsService } from '../entitlements/entitlements.service'
 
 const D = (n: number | string) => new Prisma.Decimal(n)
 
@@ -25,21 +24,12 @@ describe('CommissionsService', () => {
   beforeEach(async () => {
     prisma = {
       commissionRule: { findMany: jest.fn() },
-      commission: {
-        findFirst: jest.fn(),
-        findUnique: jest.fn(),
-        findUniqueOrThrow: jest.fn(),
-        findMany: jest.fn(),
-        count: jest.fn(),
-        upsert: jest.fn(),
-        update: jest.fn(),
-        updateMany: jest.fn(),
-      },
-      conversion: { upsert: jest.fn() },
+      commission: { findFirst: jest.fn(), create: jest.fn(), update: jest.fn(), findUnique: jest.fn(), findMany: jest.fn(), count: jest.fn() },
+      conversion: { create: jest.fn() },
       commissionAdjustment: { create: jest.fn() },
       affiliate: { findUnique: jest.fn() },
       organization: { findUnique: jest.fn() },
-      $transaction: jest.fn((work: any) => typeof work === 'function' ? work(prisma) : Promise.all(work)),
+      $transaction: jest.fn((ops: any[]) => Promise.all(ops)),
     }
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -48,7 +38,6 @@ describe('CommissionsService', () => {
         { provide: AuditService, useValue: { log: jest.fn().mockResolvedValue(undefined) } },
         { provide: MailService, useValue: { send: jest.fn().mockResolvedValue(undefined) } },
         { provide: NotificationsService, useValue: { notifyUser: jest.fn().mockResolvedValue(null), notifyOrgAdmins: jest.fn().mockResolvedValue(0) } },
-        { provide: EntitlementsService, useValue: { can: jest.fn().mockResolvedValue(true) } },
       ],
     }).compile()
     service = moduleRef.get(CommissionsService)
@@ -117,29 +106,29 @@ describe('CommissionsService', () => {
 
   describe('generateForOrder', () => {
     it('is idempotent: returns existing commission without creating', async () => {
-      prisma.commission.findUnique.mockResolvedValue({ id: 'existing' })
+      prisma.commission.findFirst.mockResolvedValue({ id: 'existing' })
       const result = await service.generateForOrder('org-1', order, 'aff-1', { method: 'coupon' })
       expect(result).toEqual({ id: 'existing' })
-      expect(prisma.commission.upsert).not.toHaveBeenCalled()
+      expect(prisma.commission.create).not.toHaveBeenCalled()
     })
 
     it('returns null when no matching rule', async () => {
-      prisma.commission.findUnique.mockResolvedValue(null)
+      prisma.commission.findFirst.mockResolvedValue(null)
       prisma.commissionRule.findMany.mockResolvedValue([])
       const result = await service.generateForOrder('org-1', order, 'aff-1', { method: 'coupon' })
       expect(result).toBeNull()
     })
 
     it('creates pending commission + conversion with computed amount', async () => {
-      prisma.commission.findUnique.mockResolvedValue(null)
+      prisma.commission.findFirst.mockResolvedValue(null)
       prisma.commissionRule.findMany.mockResolvedValue([
         { id: 'r-aff', scope: 'affiliate', priority: 10, type: 'percentage', value: D(15) },
       ])
-      prisma.commission.upsert.mockReturnValue({ id: 'c-new', status: 'pending' })
-      prisma.conversion.upsert.mockReturnValue({ id: 'conv-new' })
+      prisma.commission.create.mockReturnValue({ id: 'c-new', status: 'pending' })
+      prisma.conversion.create.mockReturnValue({ id: 'conv-new' })
       const result = await service.generateForOrder('org-1', order, 'aff-1', { method: 'cookie', clickId: 'click-1' })
       expect(result).toEqual({ id: 'c-new', status: 'pending' })
-      const commissionArg = prisma.commission.upsert.mock.calls[0][0].create
+      const commissionArg = prisma.commission.create.mock.calls[0][0].data
       expect(commissionArg.amount.toString()).toBe('15')
       expect(commissionArg.status).toBe('pending')
       expect(commissionArg.affiliateId).toBe('aff-1')
@@ -175,7 +164,7 @@ describe('CommissionsService', () => {
 
   describe('handleRefund', () => {
     it('full refund reverses commission fully', async () => {
-      prisma.commission.findMany.mockResolvedValue([{ id: 'c-1', amount: D(20), status: 'pending', adjustments: [], affiliateId: 'aff-1', currency: 'USD', payoutItem: null }])
+      prisma.commission.findMany.mockResolvedValue([{ id: 'c-1', amount: D(20) }])
       await service.handleRefund({ id: 'order-1', total: D(100), refundAmount: D(100) })
       const adj = prisma.commissionAdjustment.create.mock.calls[0][0].data
       expect(adj.type).toBe('reversal')
@@ -185,7 +174,7 @@ describe('CommissionsService', () => {
     })
 
     it('partial refund creates proportional negative adjustment', async () => {
-      prisma.commission.findMany.mockResolvedValue([{ id: 'c-1', amount: D(20), status: 'pending', adjustments: [], affiliateId: 'aff-1', currency: 'USD', payoutItem: null }])
+      prisma.commission.findMany.mockResolvedValue([{ id: 'c-1', amount: D(20) }])
       // 50 of 100 refunded => 50% => delta = -10
       await service.handleRefund({ id: 'order-1', total: D(100), refundAmount: D(50) })
       const adj = prisma.commissionAdjustment.create.mock.calls[0][0].data
@@ -194,13 +183,13 @@ describe('CommissionsService', () => {
     })
 
     it('does nothing when total <= 0', async () => {
-      prisma.commission.findMany.mockResolvedValue([{ id: 'c-1', amount: D(20), status: 'pending', adjustments: [], affiliateId: 'aff-1', currency: 'USD', payoutItem: null }])
+      prisma.commission.findMany.mockResolvedValue([{ id: 'c-1', amount: D(20) }])
       await service.handleRefund({ id: 'order-1', total: D(0), refundAmount: D(0) })
       expect(prisma.commissionAdjustment.create).not.toHaveBeenCalled()
     })
 
     it('caps refund ratio at 100% even if overrefunded', async () => {
-      prisma.commission.findMany.mockResolvedValue([{ id: 'c-1', amount: D(20), status: 'pending', adjustments: [], affiliateId: 'aff-1', currency: 'USD', payoutItem: null }])
+      prisma.commission.findMany.mockResolvedValue([{ id: 'c-1', amount: D(20) }])
       await service.handleRefund({ id: 'order-1', total: D(100), refundAmount: D(150) })
       const adj = prisma.commissionAdjustment.create.mock.calls[0][0].data
       // ratio capped at 1 => full -20

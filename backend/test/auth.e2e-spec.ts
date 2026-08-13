@@ -11,18 +11,13 @@ import { AppModule } from '../src/app.module'
  *   npm run prisma:migrate && npm run prisma:seed
  *   npm run test:e2e
  *
- * Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD to the secure seeded account.
+ * Seed logins: admin@demo.test / password123
  */
 describe('Auth & protected routes (e2e)', () => {
   let app: INestApplication
   let token: string
-  const adminEmail = process.env.E2E_ADMIN_EMAIL || ''
-  const adminPassword = process.env.E2E_ADMIN_PASSWORD || ''
 
   beforeAll(async () => {
-    if (!adminEmail || !adminPassword) {
-      throw new Error('Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD before running auth e2e tests.')
-    }
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile()
     app = moduleRef.createNestApplication()
     app.setGlobalPrefix('v1')
@@ -37,17 +32,16 @@ describe('Auth & protected routes (e2e)', () => {
   it('rejects login with bad credentials', () => {
     return request(app.getHttpServer())
       .post('/v1/auth/login')
-      .send({ email: adminEmail, password: 'definitely-not-the-real-password' })
+      .send({ email: 'admin@demo.test', password: 'wrong' })
       .expect((res) => {
         if (![400, 401].includes(res.status)) throw new Error(`expected 400/401, got ${res.status}`)
       })
   })
 
-  it('logs in with the securely seeded admin and returns a token', async () => {
+  it('logs in with seed admin and returns a token', async () => {
     const res = await request(app.getHttpServer())
       .post('/v1/auth/login')
-      .set('x-auth-mode', 'bearer')
-      .send({ email: adminEmail, password: adminPassword })
+      .send({ email: 'admin@demo.test', password: 'password123' })
       .expect((r) => { if (![200, 201].includes(r.status)) throw new Error(`login failed: ${r.status}`) })
     token = res.body.accessToken ?? res.body.token ?? res.body.access_token
     expect(token).toBeTruthy()

@@ -16,7 +16,6 @@ type Draft = {
   priceDollars: number
   currency: string
   interval: 'month' | 'year'
-  trialDays: number
   features: Record<string, boolean>
   limits: Record<string, number>
   isPublic: boolean
@@ -24,7 +23,7 @@ type Draft = {
 
 function emptyDraft(): Draft {
   return {
-    key: '', name: '', description: '', priceDollars: 0, currency: 'USD', interval: 'month', trialDays: 14,
+    key: '', name: '', description: '', priceDollars: 0, currency: 'USD', interval: 'month',
     features: Object.fromEntries(FEATURE_CATALOG.map((f) => [f.key, false])),
     limits: Object.fromEntries(LIMIT_CATALOG.map((l) => [l.key, 0])),
     isPublic: true,
@@ -32,15 +31,11 @@ function emptyDraft(): Draft {
 }
 
 function toDraft(p: AdminPlan): Draft {
-  const missingLimitDefaults: Record<string, number> = {
-    trackingLinksPerAffiliate: 5,
-    monthlyPayoutRequestsPerAffiliate: 1,
-  }
   return {
     id: p.id, key: p.key, name: p.name, description: p.description ?? '',
-    priceDollars: Math.round(p.priceCents / 100), currency: p.currency, interval: p.interval, trialDays: p.trialDays,
+    priceDollars: Math.round(p.priceCents / 100), currency: p.currency, interval: p.interval,
     features: { ...Object.fromEntries(FEATURE_CATALOG.map((f) => [f.key, false])), ...p.features },
-    limits: { ...Object.fromEntries(LIMIT_CATALOG.map((l) => [l.key, missingLimitDefaults[l.key] ?? 0])), ...p.limits },
+    limits: { ...Object.fromEntries(LIMIT_CATALOG.map((l) => [l.key, 0])), ...p.limits },
     isPublic: p.isPublic,
   }
 }
@@ -61,7 +56,6 @@ export default function PlansPage() {
       priceCents: Math.round(draft.priceDollars * 100),
       currency: draft.currency,
       interval: draft.interval,
-      trialDays: draft.trialDays,
       features: draft.features,
       limits: draft.limits,
       isPublic: draft.isPublic,
@@ -115,13 +109,7 @@ export default function PlansPage() {
               </div>
               <p className="mt-1 text-lg font-semibold tabular-nums">{money(p.priceCents / 100, p.currency)}<span className="text-xs font-normal text-muted">/{p.interval}</span></p>
               {p.description && <p className="mt-1 text-xs text-muted">{p.description}</p>}
-              <div className="mt-2 space-y-0.5 border-t border-line pt-2 text-2xs text-muted">
-                {LIMIT_CATALOG.map((limit) => (
-                  <div key={limit.key} className="flex justify-between gap-2"><span>{limit.label}</span><strong className="font-medium text-ink">{p.limits[limit.key] === -1 ? 'Unlimited' : p.limits[limit.key] ?? 0}</strong></div>
-                ))}
-              </div>
-              <p className="mt-2 text-2xs text-muted">{FEATURE_CATALOG.filter((feature) => p.features[feature.key]).length} of {FEATURE_CATALOG.length} optional features enabled</p>
-              <p className="mt-2 text-2xs text-muted">{p.trialDays} trial day(s) · {p._count?.subscriptions ?? 0} subscriber(s)</p>
+              <p className="mt-2 text-2xs text-muted">{p._count?.subscriptions ?? 0} subscriber(s)</p>
             </Card>
           ))}
         </div>
@@ -173,12 +161,6 @@ export default function PlansPage() {
                   </select>
                 </label>
               </div>
-              <label className="block">
-                <span className="text-2xs uppercase tracking-wide text-muted">Free trial days</span>
-                <input type="number" min={0} max={365} value={draft.trialDays}
-                  onChange={(e) => setDraft({ ...draft, trialDays: Math.max(0, Math.min(365, Number(e.target.value))) })}
-                  className="mt-0.5 w-full rounded-md border border-line px-2 py-1 text-sm outline-none focus:border-brand" />
-              </label>
               <div>
                 <span className="text-2xs uppercase tracking-wide text-muted">Limits (-1 = unlimited)</span>
                 <div className="mt-1 grid grid-cols-2 gap-2">

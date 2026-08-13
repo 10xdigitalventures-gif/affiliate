@@ -18,55 +18,46 @@ enum OrgStatus {
   suspended
   trial
 }
-
 enum UserStatus {
   active
   invited
   suspended
 }
-
 enum Platform {
   shopify
   woocommerce
   ghl
   custom
 }
-
 enum StoreStatus {
   connected
   disconnected
   error
 }
-
 enum AffiliateStatus {
   pending
   approved
   suspended
   rejected
 }
-
 enum ApplicationStatus {
   pending
   approved
   rejected
 }
-
 enum CouponStatus {
   active
   expired
   disabled
 }
-
 enum DiscountType {
   percentage
   fixed
 }
-
 enum ProductStatus {
   active
   inactive
 }
-
 enum RuleScope {
   global
   store
@@ -75,14 +66,12 @@ enum RuleScope {
   campaign
   affiliate
 }
-
 enum CommissionType {
   percentage
   fixed
   tiered
   recurring
 }
-
 enum CommissionStatus {
   pending
   approved
@@ -92,7 +81,6 @@ enum CommissionStatus {
   cancelled
   reversed
 }
-
 enum AdjustmentType {
   reversal
   manual
@@ -100,7 +88,6 @@ enum AdjustmentType {
   penalty
   partial_refund
 }
-
 enum PayoutMethod {
   bank
   wise
@@ -109,7 +96,6 @@ enum PayoutMethod {
   manual
   crypto
 }
-
 enum PayoutStatus {
   requested
   approved
@@ -118,71 +104,52 @@ enum PayoutStatus {
   failed
   rejected
 }
-
 enum CampaignStatus {
   draft
   active
   ended
 }
-
 enum AttributionMethod {
   coupon
   cookie
   lifetime
   manual
 }
-
 enum WebhookStatus {
   received
-  processing
   processed
   failed
 }
-
 enum SyncJobStatus {
   queued
   running
   success
   failed
 }
-
 enum NotificationChannel {
   email
   in_app
   webhook
 }
-
 enum FraudDecision {
   allow
   review
   block
 }
-
 enum FraudReviewStatus {
   open
   approved
   rejected
 }
-
 enum PlanInterval {
   month
   year
 }
-
 enum SubscriptionStatus {
   active
   trialing
   past_due
   canceled
-}
-
-enum LedgerEntryType {
-  commission_payable
-  commission_adjustment
-  payout_reserved
-  payout_released
-  payout_paid
-  reconciliation
 }
 
 // ------------------------------------------------------------------
@@ -199,75 +166,63 @@ model Organization {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  users                  User[]
-  roles                  Role[]
-  stores                 Store[]
-  affiliates             Affiliate[]
-  applications           AffiliateApplication[]
-  categories             Category[]
-  productMaps            ProductMapping[]
-  customers              Customer[]
-  rules                  CommissionRule[]
-  payouts                Payout[]
-  campaigns              Campaign[]
-  notifications          Notification[]
-  apiKeys                ApiKey[]
-  auditLogs              AuditLog[]
-  settingsKv             Setting[]
-  invitations            Invitation[]
-  fraudReviews           FraudReview[]
-  subscription           Subscription?
-  domains                Domain[]
-  gatewayConfigs         PaymentGatewayConfig[]
-  billingCustomers       BillingCustomer[]
-  billingInvoices        BillingInvoice[]
-  ssoLoginStates         SsoLoginState[]
-  shopifyOAuthStates     ShopifyOAuthState[]
-  shopifyStaffIdentities ShopifyStaffIdentity[]
-  ledgerEntries          AffiliateLedgerEntry[]
-  affiliateBalances      AffiliateBalance[]
+  users        User[]
+  roles        Role[]
+  stores       Store[]
+  affiliates   Affiliate[]
+  applications AffiliateApplication[]
+  categories   Category[]
+  productMaps  ProductMapping[]
+  customers    Customer[]
+  rules        CommissionRule[]
+  payouts      Payout[]
+  campaigns    Campaign[]
+  notifications Notification[]
+  apiKeys      ApiKey[]
+  auditLogs    AuditLog[]
+  settingsKv   Setting[]
+  invitations  Invitation[]
+  fraudReviews FraudReview[]
+  subscription Subscription?
+  domains      Domain[]
+  gatewayConfigs   PaymentGatewayConfig[]
+  billingCustomers BillingCustomer[]
+  billingInvoices  BillingInvoice[]
 }
 
 model User {
-  id                     String     @id @default(uuid())
-  organizationId         String
-  email                  String
-  passwordHash           String
-  fullName               String?
-  phoneNumber            String?
-  avatarUrl              String?    @db.Text
-  status                 UserStatus @default(invited)
-  emailVerifiedAt        DateTime?
-  twoFactorEnabled       Boolean    @default(false)
+  id             String     @id @default(uuid())
+  organizationId String
+  email          String
+  passwordHash   String
+  fullName       String?
+  status         UserStatus @default(invited)
+  emailVerifiedAt DateTime?
+  twoFactorEnabled Boolean   @default(false)
   twoFactorSecret        String?
-  twoFactorRecoveryCodes String[]   @default([])
-  ssoProvider            String?
-  ssoSubject             String?
-  isSuperAdmin           Boolean    @default(false)
-  lastLoginAt            DateTime?
-  createdAt              DateTime   @default(now())
-  updatedAt              DateTime   @updatedAt
+  twoFactorRecoveryCodes String[] @default([])
+  ssoProvider    String?
+  isSuperAdmin   Boolean    @default(false)
+  lastLoginAt    DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
-  organization           Organization           @relation(fields: [organizationId], references: [id])
-  roles                  UserRole[]
-  affiliate              Affiliate?
-  auditLogs              AuditLog[]
-  refreshTokens          RefreshToken[]
-  passwordResetTokens    PasswordResetToken[]
-  emailLoginCodes        EmailLoginCode[]
-  loginExchangeCodes     LoginExchangeCode[]
-  shopifyStaffIdentities ShopifyStaffIdentity[]
+  organization Organization @relation(fields: [organizationId], references: [id])
+  roles        UserRole[]
+  affiliate    Affiliate?
+  auditLogs    AuditLog[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
 
   @@unique([organizationId, email])
-  @@unique([organizationId, ssoProvider, ssoSubject])
   @@index([organizationId])
 }
 
 model Role {
-  id             String   @id @default(uuid())
+  id             String  @id @default(uuid())
   organizationId String?
   name           String
-  isSystem       Boolean  @default(false)
+  isSystem       Boolean @default(false)
   createdAt      DateTime @default(now())
 
   organization Organization?    @relation(fields: [organizationId], references: [id])
@@ -277,8 +232,8 @@ model Role {
 }
 
 model Permission {
-  id          String           @id @default(uuid())
-  key         String           @unique
+  id          String @id @default(uuid())
+  key         String @unique
   description String?
   roles       RolePermission[]
 }
@@ -288,16 +243,14 @@ model RolePermission {
   permissionId String
   role         Role       @relation(fields: [roleId], references: [id])
   permission   Permission @relation(fields: [permissionId], references: [id])
-
   @@id([roleId, permissionId])
 }
 
 model UserRole {
   userId String
   roleId String
-  user   User   @relation(fields: [userId], references: [id])
-  role   Role   @relation(fields: [roleId], references: [id])
-
+  user   User @relation(fields: [userId], references: [id])
+  role   Role @relation(fields: [roleId], references: [id])
   @@id([userId, roleId])
 }
 
@@ -313,7 +266,6 @@ model RefreshToken {
   createdAt         DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id])
-
   @@index([userId])
 }
 
@@ -326,94 +278,7 @@ model PasswordResetToken {
   createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id])
-
   @@index([userId])
-}
-
-/// Short-lived, single-use passwordless login challenge. The browser-visible
-/// challenge and six-digit code are stored only as keyed hashes, so a database
-/// read cannot be used to complete a login.
-model EmailLoginCode {
-  id            String    @id @default(uuid())
-  userId        String
-  challengeHash String    @unique
-  codeHash      String
-  expiresAt     DateTime
-  attempts      Int       @default(0)
-  usedAt        DateTime?
-  createdAt     DateTime  @default(now())
-
-  user User @relation(fields: [userId], references: [id])
-
-  @@index([userId])
-  @@index([expiresAt])
-}
-
-/// One-time OIDC authorization state. Only a hash of the browser-visible state
-/// is retained, preventing a database read from being enough to complete a
-/// login. PKCE and nonce values expire with the state and are consumed once.
-model SsoLoginState {
-  id             String    @id @default(uuid())
-  organizationId String
-  stateHash      String    @unique
-  codeVerifier   String
-  nonce          String
-  redirectPath   String    @default("/")
-  expiresAt      DateTime
-  usedAt         DateTime?
-  createdAt      DateTime  @default(now())
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-
-  @@index([organizationId, expiresAt])
-}
-
-/// Short-lived, single-use bridge between the backend OIDC callback and the
-/// browser. Access and refresh tokens are never placed in a redirect URL.
-model LoginExchangeCode {
-  id        String    @id @default(uuid())
-  userId    String
-  codeHash  String    @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime  @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, expiresAt])
-}
-
-model ShopifyOAuthState {
-  id             String    @id @default(uuid())
-  organizationId String
-  stateHash      String    @unique
-  expiresAt      DateTime
-  usedAt         DateTime?
-  createdAt      DateTime  @default(now())
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-
-  @@index([organizationId, expiresAt])
-}
-
-/// Explicit mapping between a Shopify staff identity and a platform user.
-/// A Shopify session token can never inherit an arbitrary/oldest tenant user.
-model ShopifyStaffIdentity {
-  id             String   @id @default(uuid())
-  organizationId String
-  storeId        String
-  userId         String
-  shopifyUserId  String
-  createdAt      DateTime @default(now())
-  lastSeenAt     DateTime @default(now())
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  store        Store        @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([storeId, shopifyUserId])
-  @@unique([storeId, userId])
-  @@index([organizationId])
 }
 
 model Invitation {
@@ -429,7 +294,6 @@ model Invitation {
 
   organization Organization @relation(fields: [organizationId], references: [id])
   role         Role?        @relation(fields: [roleId], references: [id])
-
   @@index([organizationId, email])
 }
 
@@ -448,54 +312,51 @@ model Store {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  organization           Organization           @relation(fields: [organizationId], references: [id])
-  credentials            StoreCredential?
-  products               Product[]
-  coupons                Coupon[]
-  orders                 Order[]
-  affiliateLinks         AffiliateLink[]
-  clicks                 Click[]
-  webhooks               WebhookEvent[]
-  syncJobs               SyncJob[]
-  shopifyStaffIdentities ShopifyStaffIdentity[]
+  organization Organization      @relation(fields: [organizationId], references: [id])
+  credentials  StoreCredential?
+  products     Product[]
+  coupons      Coupon[]
+  orders       Order[]
+  webhooks     WebhookEvent[]
+  syncJobs     SyncJob[]
 
   @@index([organizationId])
 }
 
 model StoreCredential {
-  id                String    @id @default(uuid())
-  storeId           String    @unique
-  accessTokenEnc    Bytes?
-  consumerKeyEnc    Bytes?
+  id              String   @id @default(uuid())
+  storeId         String   @unique
+  accessTokenEnc  Bytes?
+  consumerKeyEnc  Bytes?
   consumerSecretEnc Bytes?
-  webhookSecretEnc  Bytes?
-  scopes            String[]
-  rotatedAt         DateTime?
-  store             Store     @relation(fields: [storeId], references: [id])
+  webhookSecretEnc Bytes?
+  scopes          String[]
+  rotatedAt       DateTime?
+  store           Store    @relation(fields: [storeId], references: [id])
 }
 
 // ------------------------------------------------------------------
 // Affiliates
 // ------------------------------------------------------------------
 model Affiliate {
-  id                      String          @id @default(uuid())
-  organizationId          String
-  userId                  String?         @unique
-  affiliateCode           String
-  referralSlug            String
-  status                  AffiliateStatus @default(pending)
+  id                     String          @id @default(uuid())
+  organizationId         String
+  userId                 String?         @unique
+  affiliateCode          String
+  referralSlug           String
+  status                 AffiliateStatus @default(pending)
   defaultCommissionRuleId String?
-  parentAffiliateId       String?
-  lifetimeEarnings        Decimal         @default(0) @db.Decimal(14, 4)
-  availableBalance        Decimal         @default(0) @db.Decimal(14, 4)
-  taxInfo                 Json?
-  createdAt               DateTime        @default(now())
-  updatedAt               DateTime        @updatedAt
+  parentAffiliateId      String?
+  lifetimeEarnings       Decimal         @default(0) @db.Decimal(14, 4)
+  availableBalance       Decimal         @default(0) @db.Decimal(14, 4)
+  taxInfo                Json?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
 
-  organization  Organization           @relation(fields: [organizationId], references: [id])
-  user          User?                  @relation(fields: [userId], references: [id])
-  parent        Affiliate?             @relation("SubAffiliates", fields: [parentAffiliateId], references: [id])
-  subAffiliates Affiliate[]            @relation("SubAffiliates")
+  organization  Organization    @relation(fields: [organizationId], references: [id])
+  user          User?           @relation(fields: [userId], references: [id])
+  parent        Affiliate?      @relation("SubAffiliates", fields: [parentAffiliateId], references: [id])
+  subAffiliates Affiliate[]     @relation("SubAffiliates")
   links         AffiliateLink[]
   coupons       Coupon[]
   clicks        Click[]
@@ -505,8 +366,6 @@ model Affiliate {
   payoutMethods PayoutMethodRecord[]
   orders        Order[]
   fraudReviews  FraudReview[]
-  ledgerEntries AffiliateLedgerEntry[]
-  balances      AffiliateBalance[]
 
   @@unique([organizationId, affiliateCode])
   @@unique([organizationId, referralSlug])
@@ -523,24 +382,21 @@ model AffiliateApplication {
   reviewedBy     String?
   createdAt      DateTime          @default(now())
   organization   Organization      @relation(fields: [organizationId], references: [id])
-
   @@index([organizationId, status])
 }
 
 model AffiliateLink {
-  id             String    @id @default(uuid())
-  affiliateId    String
-  storeId        String?
-  campaignId     String?
+  id           String   @id @default(uuid())
+  affiliateId  String
+  storeId      String?
+  campaignId   String?
   destinationUrl String
-  shortCode      String    @unique
-  clicksCount    BigInt    @default(0)
-  createdAt      DateTime  @default(now())
-  affiliate      Affiliate @relation(fields: [affiliateId], references: [id])
-  store          Store?    @relation(fields: [storeId], references: [id], onDelete: SetNull)
-  campaign       Campaign? @relation(fields: [campaignId], references: [id])
-  clicks         Click[]
-
+  shortCode    String   @unique
+  clicksCount  BigInt   @default(0)
+  createdAt    DateTime @default(now())
+  affiliate    Affiliate @relation(fields: [affiliateId], references: [id])
+  campaign     Campaign? @relation(fields: [campaignId], references: [id])
+  clicks       Click[]
   @@index([affiliateId])
 }
 
@@ -548,7 +404,7 @@ model AffiliateLink {
 // Catalog
 // ------------------------------------------------------------------
 model Category {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   name           String
   externalId     String?
@@ -569,13 +425,12 @@ model Product {
   store      Store         @relation(fields: [storeId], references: [id])
   category   Category?     @relation(fields: [categoryId], references: [id])
   orderItems OrderItem[]
-
   @@unique([storeId, externalId])
   @@index([storeId])
 }
 
 model ProductMapping {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   canonicalName  String
   productIds     String[]
@@ -583,20 +438,18 @@ model ProductMapping {
 }
 
 model Coupon {
-  id           String        @id @default(uuid())
-  storeId      String
-  affiliateId  String?
-  code         String
-  externalId   String?
+  id          String       @id @default(uuid())
+  storeId     String
+  affiliateId String?
+  code        String
+  externalId  String?
   discountType DiscountType?
-  status       CouponStatus  @default(active)
-  expiresAt    DateTime?
-  createdAt    DateTime      @default(now())
-  store        Store         @relation(fields: [storeId], references: [id])
-  affiliate    Affiliate?    @relation(fields: [affiliateId], references: [id])
-  orders       Order[]
-
-  @@unique([storeId, code])
+  status      CouponStatus @default(active)
+  expiresAt   DateTime?
+  createdAt   DateTime     @default(now())
+  store       Store        @relation(fields: [storeId], references: [id])
+  affiliate   Affiliate?   @relation(fields: [affiliateId], references: [id])
+  orders      Order[]
   @@index([storeId])
   @@index([affiliateId])
 }
@@ -605,35 +458,30 @@ model Coupon {
 // Customers & Orders
 // ------------------------------------------------------------------
 model Customer {
-  id                 String       @id @default(uuid())
-  organizationId     String
-  email              String?
-  normalizedEmail    String?
-  externalCustomerId String?
-  phone              String?
-  firstAffiliateId   String?
-  createdAt          DateTime     @default(now())
-  organization       Organization @relation(fields: [organizationId], references: [id])
-  orders             Order[]
-
-  @@unique([organizationId, normalizedEmail])
-  @@unique([organizationId, externalCustomerId])
+  id               String   @id @default(uuid())
+  organizationId   String
+  email            String?
+  phone            String?
+  firstAffiliateId String?
+  createdAt        DateTime @default(now())
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  orders           Order[]
   @@index([organizationId, email])
 }
 
 model Order {
-  id              String    @id @default(uuid())
+  id              String   @id @default(uuid())
   storeId         String
   externalOrderId String
   customerId      String?
   affiliateId     String?
   couponId        String?
-  currency        String    @db.Char(3)
-  subtotal        Decimal   @db.Decimal(14, 4)
-  tax             Decimal   @default(0) @db.Decimal(14, 4)
-  shipping        Decimal   @default(0) @db.Decimal(14, 4)
-  total           Decimal   @db.Decimal(14, 4)
-  refundAmount    Decimal   @default(0) @db.Decimal(14, 4)
+  currency        String   @db.Char(3)
+  subtotal        Decimal  @db.Decimal(14, 4)
+  tax             Decimal  @default(0) @db.Decimal(14, 4)
+  shipping        Decimal  @default(0) @db.Decimal(14, 4)
+  total           Decimal  @db.Decimal(14, 4)
+  refundAmount    Decimal  @default(0) @db.Decimal(14, 4)
   status          String
   attributionType String?
   trafficChannel  String?
@@ -644,18 +492,18 @@ model Order {
   utmCampaign     String?
   utmContent      String?
   utmTerm         String?
-  landingPage     String?   @db.Text
-  referrer        String?   @db.Text
+  landingPage     String?  @db.Text
+  referrer        String?  @db.Text
   placedAt        DateTime?
-  createdAt       DateTime  @default(now())
+  createdAt       DateTime @default(now())
 
-  store        Store         @relation(fields: [storeId], references: [id])
-  customer     Customer?     @relation(fields: [customerId], references: [id])
-  affiliate    Affiliate?    @relation(fields: [affiliateId], references: [id])
-  coupon       Coupon?       @relation(fields: [couponId], references: [id])
-  items        OrderItem[]
-  commissions  Commission[]
-  conversions  Conversion[]
+  store       Store       @relation(fields: [storeId], references: [id])
+  customer    Customer?   @relation(fields: [customerId], references: [id])
+  affiliate   Affiliate?  @relation(fields: [affiliateId], references: [id])
+  coupon      Coupon?     @relation(fields: [couponId], references: [id])
+  items       OrderItem[]
+  commissions Commission[]
+  conversions Conversion[]
   fraudReviews FraudReview[]
 
   @@unique([storeId, externalOrderId])
@@ -682,19 +530,19 @@ model FraudReview {
   order        Order        @relation(fields: [orderId], references: [id])
   affiliate    Affiliate    @relation(fields: [affiliateId], references: [id])
 
-  @@unique([orderId, affiliateId])
   @@index([organizationId, status])
+  @@index([orderId])
   @@index([affiliateId])
 }
 
 model OrderItem {
-  id               String   @id @default(uuid())
+  id               String  @id @default(uuid())
   orderId          String
   productId        String?
   quantity         Int
-  unitPrice        Decimal  @db.Decimal(14, 4)
-  commissionAmount Decimal  @default(0) @db.Decimal(14, 4)
-  order            Order    @relation(fields: [orderId], references: [id])
+  unitPrice        Decimal @db.Decimal(14, 4)
+  commissionAmount Decimal @default(0) @db.Decimal(14, 4)
+  order            Order   @relation(fields: [orderId], references: [id])
   product          Product? @relation(fields: [productId], references: [id])
 }
 
@@ -702,7 +550,7 @@ model OrderItem {
 // Tracking & Attribution
 // ------------------------------------------------------------------
 model Click {
-  id              String         @id @default(uuid())
+  id              String   @id @default(uuid())
   affiliateId     String
   affiliateLinkId String?
   storeId         String?
@@ -713,13 +561,11 @@ model Click {
   utm             Json?
   channel         String?
   adNetwork       String?
-  country         String?        @db.Char(2)
-  occurredAt      DateTime       @default(now())
-  affiliate       Affiliate      @relation(fields: [affiliateId], references: [id])
+  country         String?  @db.Char(2)
+  occurredAt      DateTime @default(now())
+  affiliate       Affiliate     @relation(fields: [affiliateId], references: [id])
   link            AffiliateLink? @relation(fields: [affiliateLinkId], references: [id])
-  store           Store?         @relation(fields: [storeId], references: [id], onDelete: SetNull)
   conversions     Conversion[]
-
   @@index([affiliateId, occurredAt])
 }
 
@@ -730,11 +576,9 @@ model Conversion {
   affiliateId       String
   attributionMethod AttributionMethod
   createdAt         DateTime          @default(now())
-  click             Click?            @relation(fields: [clickId], references: [id])
-  order             Order             @relation(fields: [orderId], references: [id])
-  affiliate         Affiliate         @relation(fields: [affiliateId], references: [id])
-
-  @@unique([orderId, affiliateId])
+  click             Click?    @relation(fields: [clickId], references: [id])
+  order             Order     @relation(fields: [orderId], references: [id])
+  affiliate         Affiliate @relation(fields: [affiliateId], references: [id])
   @@index([orderId])
 }
 
@@ -753,80 +597,70 @@ model CommissionRule {
   createdAt      DateTime       @default(now())
   organization   Organization   @relation(fields: [organizationId], references: [id])
   commissions    Commission[]
-
   @@index([organizationId, scope])
 }
 
 model Commission {
-  id                 String           @id @default(uuid())
-  orderId            String
-  affiliateId        String
-  commissionRuleId   String?
-  amount             Decimal          @db.Decimal(14, 4)
-  currency           String           @db.Char(3)
-  channel            String?
-  attributionType    String?
-  status             CommissionStatus @default(pending)
-  payoutItemId       String?          @unique
+  id               String           @id @default(uuid())
+  orderId          String
+  affiliateId      String
+  commissionRuleId String?
+  amount           Decimal          @db.Decimal(14, 4)
+  currency         String           @db.Char(3)
+  channel          String?
+  attributionType  String?
+  status           CommissionStatus @default(pending)
+  payoutItemId     String?          @unique
   // Multi-tier / sub-affiliate override linkage
-  tier               Int              @default(0) // 0 = direct sale, 1+ = override earned from a downline
-  sourceCommissionId String? // the direct commission this override was derived from
-  idempotencyKey     String           @unique
-  approvedAt         DateTime?
-  payableAt          DateTime?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  tier             Int              @default(0)   // 0 = direct sale, 1+ = override earned from a downline
+  sourceCommissionId String?                       // the direct commission this override was derived from
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
-  order         Order                  @relation(fields: [orderId], references: [id])
-  affiliate     Affiliate              @relation(fields: [affiliateId], references: [id])
-  rule          CommissionRule?        @relation(fields: [commissionRuleId], references: [id])
-  source        Commission?            @relation("CommissionOverrides", fields: [sourceCommissionId], references: [id])
-  overrides     Commission[]           @relation("CommissionOverrides")
-  adjustments   CommissionAdjustment[]
-  payoutItem    PayoutItem?            @relation(fields: [payoutItemId], references: [id])
-  ledgerEntries AffiliateLedgerEntry[]
-
+  order       Order            @relation(fields: [orderId], references: [id])
+  affiliate   Affiliate        @relation(fields: [affiliateId], references: [id])
+  rule        CommissionRule?  @relation(fields: [commissionRuleId], references: [id])
+  source      Commission?      @relation("CommissionOverrides", fields: [sourceCommissionId], references: [id])
+  overrides   Commission[]     @relation("CommissionOverrides")
+  adjustments CommissionAdjustment[]
+  payoutItem  PayoutItem?      @relation(fields: [payoutItemId], references: [id])
   @@index([affiliateId, status])
   @@index([sourceCommissionId])
 }
 
 model CommissionAdjustment {
-  id             String         @id @default(uuid())
-  commissionId   String
-  type           AdjustmentType
-  delta          Decimal        @db.Decimal(14, 4)
-  reason         String?
-  idempotencyKey String?        @unique
-  metadata       Json?
-  createdBy      String?
-  createdAt      DateTime       @default(now())
-  commission     Commission     @relation(fields: [commissionId], references: [id])
+  id           String         @id @default(uuid())
+  commissionId String
+  type         AdjustmentType
+  delta        Decimal        @db.Decimal(14, 4)
+  reason       String?
+  createdBy    String?
+  createdAt    DateTime       @default(now())
+  commission   Commission     @relation(fields: [commissionId], references: [id])
 }
 
 model Payout {
-  id                   String                 @id @default(uuid())
+  id                   String       @id @default(uuid())
   organizationId       String
   affiliateId          String
-  amount               Decimal                @db.Decimal(14, 4)
-  currency             String                 @db.Char(3)
+  amount               Decimal      @db.Decimal(14, 4)
+  currency             String       @db.Char(3)
   method               PayoutMethod
-  status               PayoutStatus           @default(requested)
+  status               PayoutStatus @default(requested)
   transactionReference String?
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  organization         Organization           @relation(fields: [organizationId], references: [id])
-  affiliate            Affiliate              @relation(fields: [affiliateId], references: [id])
-  items                PayoutItem[]
-  ledgerEntries        AffiliateLedgerEntry[]
-
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  organization Organization @relation(fields: [organizationId], references: [id])
+  affiliate    Affiliate    @relation(fields: [affiliateId], references: [id])
+  items        PayoutItem[]
   @@index([organizationId, status])
 }
 
 model PayoutItem {
-  id         String      @id @default(uuid())
+  id         String     @id @default(uuid())
   payoutId   String
-  amount     Decimal     @db.Decimal(14, 4)
-  payout     Payout      @relation(fields: [payoutId], references: [id])
+  amount     Decimal    @db.Decimal(14, 4)
+  payout     Payout     @relation(fields: [payoutId], references: [id])
   commission Commission?
 }
 
@@ -839,60 +673,17 @@ model PayoutMethodRecord {
   affiliate   Affiliate    @relation(fields: [affiliateId], references: [id])
 }
 
-/// Append-only affiliate money ledger. Affiliate balance columns are a
-/// transactionally maintained cache; this records every financial mutation.
-model AffiliateLedgerEntry {
-  id             String          @id @default(uuid())
-  organizationId String
-  affiliateId    String
-  commissionId   String?
-  payoutId       String?
-  type           LedgerEntryType
-  balanceDelta   Decimal         @db.Decimal(14, 4)
-  lifetimeDelta  Decimal         @default(0) @db.Decimal(14, 4)
-  currency       String          @db.Char(3)
-  idempotencyKey String          @unique
-  description    String?
-  metadata       Json?
-  createdAt      DateTime        @default(now())
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  affiliate    Affiliate    @relation(fields: [affiliateId], references: [id], onDelete: Restrict)
-  commission   Commission?  @relation(fields: [commissionId], references: [id], onDelete: Restrict)
-  payout       Payout?      @relation(fields: [payoutId], references: [id], onDelete: Restrict)
-
-  @@index([organizationId, createdAt])
-  @@index([affiliateId, currency, createdAt])
-}
-
-/// Currency-specific cached balance derived from the append-only ledger.
-model AffiliateBalance {
-  id             String   @id @default(uuid())
-  organizationId String
-  affiliateId    String
-  currency       String   @db.Char(3)
-  available      Decimal  @default(0) @db.Decimal(14, 4)
-  lifetime       Decimal  @default(0) @db.Decimal(14, 4)
-  updatedAt      DateTime @updatedAt
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  affiliate    Affiliate    @relation(fields: [affiliateId], references: [id], onDelete: Restrict)
-
-  @@unique([affiliateId, currency])
-  @@index([organizationId, currency])
-}
-
 // ------------------------------------------------------------------
 // Campaigns, Notifications, Ops
 // ------------------------------------------------------------------
 model Campaign {
-  id             String           @id @default(uuid())
+  id             String         @id @default(uuid())
   organizationId String
   name           String
   startsAt       DateTime?
   endsAt         DateTime?
-  status         CampaignStatus   @default(draft)
-  organization   Organization     @relation(fields: [organizationId], references: [id])
+  status         CampaignStatus @default(draft)
+  organization   Organization   @relation(fields: [organizationId], references: [id])
   links          AffiliateLink[]
   assets         MarketingAsset[]
 }
@@ -923,18 +714,16 @@ model Notification {
 }
 
 model WebhookEvent {
-  id                  String        @id @default(uuid())
-  storeId             String
-  platform            Platform
-  topic               String
-  idempotencyKey      String        @unique
-  payload             Json
-  status              WebhookStatus @default(received)
-  processingStartedAt DateTime?
-  attempts            Int           @default(0)
-  createdAt           DateTime      @default(now())
-  store               Store         @relation(fields: [storeId], references: [id])
-
+  id             String        @id @default(uuid())
+  storeId        String
+  platform       Platform
+  topic          String
+  idempotencyKey String        @unique
+  payload        Json
+  status         WebhookStatus @default(received)
+  attempts       Int           @default(0)
+  createdAt      DateTime      @default(now())
+  store          Store         @relation(fields: [storeId], references: [id])
   @@index([storeId, topic])
 }
 
@@ -949,18 +738,18 @@ model SyncJob {
 }
 
 model ApiKey {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   name           String
   keyHash        String
   scopes         String[]
   lastUsedAt     DateTime?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime @default(now())
   organization   Organization @relation(fields: [organizationId], references: [id])
 }
 
 model AuditLog {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   userId         String?
   action         String
@@ -969,39 +758,38 @@ model AuditLog {
   oldValue       Json?
   newValue       Json?
   ipAddress      String?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime @default(now())
   organization   Organization @relation(fields: [organizationId], references: [id])
-  user           User?        @relation(fields: [userId], references: [id])
-
+  user           User?    @relation(fields: [userId], references: [id])
   @@index([organizationId, createdAt])
 }
 
 model Setting {
-  id             String       @id @default(uuid())
+  id             String   @id @default(uuid())
   organizationId String
   key            String
   value          Json
   organization   Organization @relation(fields: [organizationId], references: [id])
-
   @@unique([organizationId, key])
 }
 
+
 model Plan {
-  id            String         @id @default(uuid())
-  key           String         @unique
+  id            String       @id @default(uuid())
+  key           String       @unique
   name          String
   description   String?
-  priceCents    Int            @default(0)
-  currency      String         @default("USD") @db.Char(3)
-  interval      PlanInterval   @default(month)
-  features      Json           @default("{}")
-  limits        Json           @default("{}")
-  isPublic      Boolean        @default(true)
-  isArchived    Boolean        @default(false)
-  sortOrder     Int            @default(0)
-  trialDays     Int            @default(0)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  priceCents    Int          @default(0)
+  currency      String       @default("USD") @db.Char(3)
+  interval      PlanInterval @default(month)
+  features      Json         @default("{}")
+  limits        Json         @default("{}")
+  isPublic      Boolean      @default(true)
+  isArchived    Boolean      @default(false)
+  sortOrder     Int          @default(0)
+  trialDays     Int          @default(0)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
   subscriptions Subscription[]
 }
 
@@ -1015,14 +803,10 @@ model Subscription {
   seats            Int                @default(0)
   overrides        Json?
   externalRef      String?
-  billingLockAt    DateTime?
-  billingLockToken String?
-  pastDueSince     DateTime?
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
   organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   plan             Plan               @relation(fields: [planId], references: [id])
-
   @@index([planId])
 }
 
@@ -1039,21 +823,22 @@ enum DomainPurpose {
 }
 
 model Domain {
-  id                String        @id @default(uuid())
-  organizationId    String
-  hostname          String        @unique
-  status            DomainStatus  @default(pending)
-  purpose           DomainPurpose @default(login)
+  id               String       @id @default(uuid())
+  organizationId   String
+  hostname         String       @unique
+  status           DomainStatus @default(pending)
+  purpose          DomainPurpose @default(login)
   verificationToken String
-  isPrimary         Boolean       @default(false)
-  lastCheckedAt     DateTime?
-  verifiedAt        DateTime?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  isPrimary        Boolean      @default(false)
+  lastCheckedAt    DateTime?
+  verifiedAt       DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
 }
+
 
 // ------------------------------------------------------------------
 // Billing & Payment Gateways (platform billing: charging tenants/clients)
@@ -1063,12 +848,10 @@ enum GatewayProvider {
   whop
   swich
 }
-
 enum GatewayScope {
   platform
   tenant
 }
-
 enum BillingInvoiceStatus {
   draft
   open
@@ -1077,7 +860,6 @@ enum BillingInvoiceStatus {
   uncollectible
   refunded
 }
-
 enum BillingEventStatus {
   received
   processed
@@ -1088,55 +870,53 @@ enum BillingEventStatus {
 // Gateway credentials + tax config. scope=platform => owned by 10x Digital
 // Ventures; scope=tenant => a merchant billing their own customers (future).
 model PaymentGatewayConfig {
-  id               String            @id @default(uuid())
-  scope            GatewayScope      @default(platform)
-  organizationId   String? // null when scope=platform
+  id               String          @id @default(uuid())
+  scope            GatewayScope    @default(platform)
+  organizationId   String?         // null when scope=platform
   provider         GatewayProvider
   label            String?
   // Credentials. companyId = Whop biz_... / Swich company id. Secrets encrypted.
   companyId        String?
   apiKeyEnc        Bytes?
   webhookSecretEnc Bytes?
-  isLive           Boolean           @default(false)
-  isActive         Boolean           @default(true)
-  isDefault        Boolean           @default(false)
+  isLive           Boolean         @default(false)
+  isActive         Boolean         @default(true)
+  isDefault        Boolean         @default(false)
   // Tax passed on to the customer (client) on top of plan price.
-  taxEnabled       Boolean           @default(false)
-  taxPercent       Float             @default(0)
-  taxLabel         String?           @default("Tax")
-  taxInclusive     Boolean           @default(false)
+  taxEnabled       Boolean         @default(false)
+  taxPercent       Float           @default(0)
+  taxLabel         String?         @default("Tax")
+  taxInclusive     Boolean         @default(false)
   metadata         Json?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  organization     Organization?     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  organization     Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customers        BillingCustomer[]
   invoices         BillingInvoice[]
-
   @@index([scope, provider])
   @@index([organizationId])
 }
 
 // A paying client mapped to a gateway customer + their saved card on file.
 model BillingCustomer {
-  id                     String               @id @default(uuid())
+  id                     String          @id @default(uuid())
   organizationId         String
   configId               String
   provider               GatewayProvider
   providerCustomerId     String?
-  providerMemberId       String? // Whop mber_...
-  defaultPaymentMethodId String? // Whop payt_...
+  providerMemberId       String?         // Whop mber_...
+  defaultPaymentMethodId String?         // Whop payt_...
   cardBrand              String?
   cardLast4              String?
   cardExpMonth           Int?
   cardExpYear            Int?
   email                  String?
   metadata               Json?
-  createdAt              DateTime             @default(now())
-  updatedAt              DateTime             @updatedAt
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
   organization           Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   config                 PaymentGatewayConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
   invoices               BillingInvoice[]
-
   @@unique([organizationId, configId])
   @@index([provider])
 }
@@ -1150,7 +930,6 @@ model BillingInvoice {
   provider          GatewayProvider
   providerInvoiceId String?
   providerPaymentId String?
-  idempotencyKey    String?              @unique
   number            String?
   status            BillingInvoiceStatus @default(draft)
   currency          String               @default("USD") @db.Char(3)
@@ -1170,9 +949,7 @@ model BillingInvoice {
   organization      Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   config            PaymentGatewayConfig @relation(fields: [configId], references: [id])
   customer          BillingCustomer?     @relation(fields: [customerId], references: [id])
-
   @@index([organizationId])
-  @@index([organizationId, periodStart])
   @@index([provider, status])
 }
 
@@ -1187,7 +964,6 @@ model GatewayEvent {
   error       String?
   receivedAt  DateTime           @default(now())
   processedAt DateTime?
-
   @@unique([provider, eventId])
   @@index([type])
 }

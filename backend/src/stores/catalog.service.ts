@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { ShopifyService } from '../integrations/shopify.service'
 import { WooCommerceService } from '../integrations/woocommerce.service'
@@ -52,12 +52,7 @@ export class CatalogService {
   }
 
   async listProducts(organizationId: string, params: ListProductsParams) {
-    if (params.status && !new Set(['active', 'inactive']).has(params.status)) {
-      throw new BadRequestException('Invalid product status')
-    }
-    const { storeId, categoryId, status, search } = params
-    const skip = Number.isInteger(params.skip) ? Math.max(params.skip!, 0) : 0
-    const take = Number.isInteger(params.take) ? Math.min(Math.max(params.take!, 1), 100) : 25
+    const { storeId, categoryId, status, search, skip = 0, take = 25 } = params
     const where: any = { store: { organizationId } }
     if (storeId) where.storeId = storeId
     if (categoryId) where.categoryId = categoryId
@@ -167,7 +162,7 @@ export class CatalogService {
       let updated = 0
       let skipped = 0
       for (const np of normalized) {
-        if (!this.validNormalizedProduct(np)) {
+        if (!np || !np.externalId || !np.name) {
           skipped++
           continue
         }
@@ -185,19 +180,5 @@ export class CatalogService {
       await this.prisma.syncJob.update({ where: { id: job.id }, data: { status: 'failed' } })
       throw err
     }
-  }
-
-  private validNormalizedProduct(value: unknown): value is NormalizedProduct {
-    if (!value || typeof value !== 'object') return false
-    const product = value as Partial<NormalizedProduct>
-    return (
-      typeof product.externalId === 'string' && product.externalId.trim().length > 0 && product.externalId.length <= 255 &&
-      typeof product.name === 'string' && product.name.trim().length > 0 && product.name.length <= 500 &&
-      typeof product.price === 'number' && Number.isFinite(product.price) && product.price >= 0 && product.price <= 1_000_000_000_000 &&
-      (product.sku == null || (typeof product.sku === 'string' && product.sku.length <= 255)) &&
-      (product.categoryName == null || (typeof product.categoryName === 'string' && product.categoryName.length <= 255)) &&
-      (product.categoryExternalId == null || (typeof product.categoryExternalId === 'string' && product.categoryExternalId.length <= 255)) &&
-      (product.status == null || product.status === 'active' || product.status === 'inactive')
-    )
   }
 }

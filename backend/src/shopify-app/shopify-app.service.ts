@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common'
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto'
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto'
 import { StoresService } from '../stores/stores.service'
 import { PrismaService } from '../prisma/prisma.service'
 import { AuthService } from '../auth/auth.service'
@@ -13,7 +13,7 @@ import { AuthService } from '../auth/auth.service'
  *   SHOPIFY_API_SECRET     app shared secret (also used to sign inbound webhooks)
  *   SHOPIFY_SCOPES         csv, default read_orders,read_products,read_discounts
  *   SHOPIFY_APP_URL        public base URL of THIS api (e.g. https://api.acme.com)
- *   SHOPIFY_API_VERSION    pinned supported Admin API version (required)
+ *   SHOPIFY_API_VERSION    admin API version (default 2024-01)
  *   API_PREFIX             global route prefix (default v1)
  *
  * Inbound order/refund webhooks reuse the existing /webhooks/shopify/:storeId
@@ -41,11 +41,7 @@ export class ShopifyAppService {
     return process.env.SHOPIFY_SCOPES || 'read_orders,read_products,read_discounts'
   }
   get apiVersion() {
-    const version = process.env.SHOPIFY_API_VERSION || ''
-    if (!/^20\d{2}-(01|04|07|10)$/.test(version)) {
-      throw new BadRequestException('SHOPIFY_API_VERSION must be configured as a supported YYYY-MM version')
-    }
-    return version
+    return process.env.SHOPIFY_API_VERSION || '2024-01'
   }
   get appUrl() {
     return (process.env.SHOPIFY_APP_URL || 'http://localhost:4000').replace(/\/$/, '')
@@ -74,45 +70,39 @@ export class ShopifyAppService {
     return `${this.appUrl}/${this.apiPrefix}/shopify/callback`
   }
 
-  // ─── One-time OAuth state (carries no tenant data in the browser) ──────────
-  async signState(organizationId: string): Promise<string> {
-    const state = randomBytes(32).toString('base64url')
-    await this.prisma.shopifyOAuthState.create({
-      data: {
-        organizationId,
-        stateHash: createHash('sha256').update(state).digest('hex'),
-        expiresAt: new Date(Date.now() + this.stateTtlMs),
-      },
-    })
-    this.prisma.shopifyOAuthState
-      .deleteMany({ where: { expiresAt: { lt: new Date(Date.now() - 24 * 60 * 60_000) } } })
-      .catch(() => undefined)
-    return state
+  // ─── Signed state (carries organizationId across the OAuth round-trip) ──────
+  signState(organizationId: string): string {
+    const body = `${organizationId}.${Date.now()}.${randomBytes(8).toString('hex')}`
+    const sig = createHmac('sha256', this.apiSecret).update(body).digest('hex')
+    return Buffer.from(`${body}.${sig}`).toString('base64url')
   }
 
-  async verifyState(state: string | undefined): Promise<{ organizationId: string }> {
+  verifyState(state: string | undefined): { organizationId: string } {
     if (!state) throw new BadRequestException('Missing OAuth state')
-    const record = await this.prisma.shopifyOAuthState.findUnique({
-      where: { stateHash: createHash('sha256').update(state).digest('hex') },
-    })
-    if (!record || record.usedAt || record.expiresAt.getTime() < Date.now()) {
-      throw new BadRequestException('Invalid or expired OAuth state')
+    let decoded: string
+    try {
+      decoded = Buffer.from(state, 'base64url').toString('utf8')
+    } catch {
+      throw new BadRequestException('Malformed OAuth state')
     }
-    const consumed = await this.prisma.shopifyOAuthState.updateMany({
-      where: { id: record.id, usedAt: null, expiresAt: { gt: new Date() } },
-      data: { usedAt: new Date() },
-    })
-    if (consumed.count !== 1) throw new BadRequestException('OAuth state has already been used')
-    return { organizationId: record.organizationId }
+    const parts = decoded.split('.')
+    if (parts.length !== 4) throw new BadRequestException('Malformed OAuth state')
+    const [organizationId, ts, nonce, sig] = parts
+    const expected = createHmac('sha256', this.apiSecret)
+      .update(`${organizationId}.${ts}.${nonce}`)
+      .digest('hex')
+    if (!this.safeEqual(sig, expected)) throw new BadRequestException('OAuth state signature mismatch')
+    if (Date.now() - Number(ts) > this.stateTtlMs) throw new BadRequestException('OAuth state expired')
+    return { organizationId }
   }
 
   /** Build the Shopify authorize URL the merchant is redirected to. */
-  async buildInstallUrl(shop: string, organizationId: string): Promise<string> {
+  buildInstallUrl(shop: string, organizationId: string): string {
     if (!this.isConfigured()) {
       throw new BadRequestException('Shopify app not configured (SHOPIFY_API_KEY / SHOPIFY_API_SECRET missing)')
     }
     const shopHost = this.normalizeShop(shop)
-    const state = await this.signState(organizationId)
+    const state = this.signState(organizationId)
     const params = new URLSearchParams({
       client_id: this.apiKey,
       scope: this.scopes,
@@ -141,10 +131,9 @@ export class ShopifyAppService {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ client_id: this.apiKey, client_secret: this.apiSecret, code }),
-      signal: AbortSignal.timeout(10_000),
     })
     if (!res.ok) {
-      throw new BadRequestException(`Shopify token exchange failed (${res.status})`)
+      throw new BadRequestException(`Shopify token exchange failed: ${res.status} ${await res.text()}`)
     }
     const json: any = await res.json()
     return { accessToken: json.access_token, scope: json.scope ?? '' }
@@ -164,7 +153,6 @@ export class ShopifyAppService {
             'X-Shopify-Access-Token': accessToken,
           },
           body: JSON.stringify({ webhook: { topic, address, format: 'json' } }),
-          signal: AbortSignal.timeout(10_000),
         })
         if (res.ok) {
           registered.push(topic)
@@ -186,7 +174,7 @@ export class ShopifyAppService {
     if (!this.isConfigured()) throw new BadRequestException('Shopify app not configured')
     const shop = this.normalizeShop(query.shop)
     if (!this.verifyOAuthHmac(query)) throw new BadRequestException('Invalid OAuth HMAC')
-    const { organizationId } = await this.verifyState(query.state)
+    const { organizationId } = this.verifyState(query.state)
     if (!query.code) throw new BadRequestException('Missing authorization code')
 
     const { accessToken, scope } = await this.exchangeToken(shop, String(query.code))
@@ -215,16 +203,11 @@ export class ShopifyAppService {
    * Verify a Shopify App Bridge session token (a JWT, HS256-signed with the app
    * secret) and return the shop domain from its `dest` claim.
    */
-  verifySessionToken(sessionToken: string): { shop: string; shopifyUserId: string } {
+  verifySessionToken(sessionToken: string): { shop: string } {
     if (!this.isConfigured()) throw new BadRequestException('Shopify app not configured')
     const parts = (sessionToken || '').split('.')
     if (parts.length !== 3) throw new UnauthorizedException('Malformed session token')
     const [header, payload, signature] = parts
-    const decodedHeader = (() => {
-      try { return JSON.parse(Buffer.from(header, 'base64url').toString('utf8')) as Record<string, unknown> }
-      catch { throw new UnauthorizedException('Malformed session token header') }
-    })()
-    if (decodedHeader.alg !== 'HS256') throw new UnauthorizedException('Unsupported session token algorithm')
     const expected = createHmac('sha256', this.apiSecret).update(`${header}.${payload}`).digest('base64url')
     if (!this.safeEqual(signature, expected)) throw new UnauthorizedException('Invalid session token signature')
     let claims: any
@@ -234,43 +217,13 @@ export class ShopifyAppService {
       throw new UnauthorizedException('Malformed session token payload')
     }
     const now = Math.floor(Date.now() / 1000)
-    if (typeof claims.exp !== 'number' || claims.exp < now - 5 || claims.exp > now + 5 * 60) {
-      throw new UnauthorizedException('Session token expiry is invalid')
-    }
-    if (typeof claims.nbf !== 'number' || claims.nbf > now + 5) throw new UnauthorizedException('Session token not yet valid')
-    if (typeof claims.iat !== 'number' || claims.iat > now + 5) throw new UnauthorizedException('Session token issue time is invalid')
-    const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud]
-    if (!audiences.includes(this.apiKey)) throw new UnauthorizedException('Session token audience mismatch')
-    if (typeof claims.sub !== 'string' || !claims.sub) throw new UnauthorizedException('Session token subject is missing')
-    let destination: URL
-    try { destination = new URL(String(claims.dest || '')) }
-    catch { throw new UnauthorizedException('Session token destination is invalid') }
-    if (destination.protocol !== 'https:') throw new UnauthorizedException('Session token destination is invalid')
-    return { shop: this.normalizeShop(destination.hostname), shopifyUserId: claims.sub }
-  }
-
-  /** Explicitly bind the current platform user to their Shopify staff identity. */
-  async linkSessionIdentity(sessionToken: string, organizationId: string, userId: string) {
-    const { shop, shopifyUserId } = this.verifySessionToken(sessionToken)
-    const store = await this.prisma.store.findFirst({
-      where: { organizationId, platform: 'shopify' as any, domain: shop },
-    })
-    if (!store) throw new UnauthorizedException('This Shopify store is not connected to your workspace')
-    const user = await this.prisma.user.findFirst({ where: { id: userId, organizationId, status: 'active' as any } })
-    if (!user) throw new UnauthorizedException('Platform account is not active')
-
-    const existing = await this.prisma.shopifyStaffIdentity.findUnique({
-      where: { storeId_shopifyUserId: { storeId: store.id, shopifyUserId } },
-    })
-    if (existing && existing.userId !== userId) {
-      throw new UnauthorizedException('This Shopify staff identity is already linked to another account')
-    }
-    return this.prisma.shopifyStaffIdentity.upsert({
-      where: { storeId_userId: { storeId: store.id, userId } },
-      create: { organizationId, storeId: store.id, userId, shopifyUserId },
-      update: { shopifyUserId, lastSeenAt: new Date() },
-      select: { id: true, storeId: true, lastSeenAt: true },
-    })
+    if (typeof claims.exp === 'number' && claims.exp < now) throw new UnauthorizedException('Session token expired')
+    if (typeof claims.nbf === 'number' && claims.nbf > now + 5) throw new UnauthorizedException('Session token not yet valid')
+    if (this.apiKey && claims.aud && claims.aud !== this.apiKey) throw new UnauthorizedException('Session token audience mismatch')
+    const dest = String(claims.dest || claims.iss || '')
+    const withoutProto = dest.includes('://') ? dest.slice(dest.indexOf('://') + 3) : dest
+    const shop = withoutProto.split('/')[0]
+    return { shop: this.normalizeShop(shop) }
   }
 
   /**
@@ -279,26 +232,17 @@ export class ShopifyAppService {
    * embedded (in-admin) experience so the merchant never leaves Shopify.
    */
   async exchangeSessionForTokens(sessionToken: string) {
-    const { shop, shopifyUserId } = this.verifySessionToken(sessionToken)
+    const { shop } = this.verifySessionToken(sessionToken)
     const store = await this.prisma.store.findFirst({
       where: { platform: 'shopify' as any, domain: shop },
     })
     if (!store) throw new UnauthorizedException('This Shopify store is not connected to an account yet')
-    const identity = await this.prisma.shopifyStaffIdentity.findUnique({
-      where: { storeId_shopifyUserId: { storeId: store.id, shopifyUserId } },
-      include: { user: true, organization: true },
+    const user = await this.prisma.user.findFirst({
+      where: { organizationId: store.organizationId, status: 'active' as any },
+      orderBy: { createdAt: 'asc' },
     })
-    if (!identity || identity.organizationId !== store.organizationId) {
-      throw new UnauthorizedException('Shopify identity is not linked. Sign in to the platform and link this Shopify staff account.')
-    }
-    if (identity.user.status !== 'active' || identity.organization.status === 'suspended') {
-      throw new UnauthorizedException('Linked platform account is not active')
-    }
-    await this.prisma.shopifyStaffIdentity.update({
-      where: { id: identity.id },
-      data: { lastSeenAt: new Date() },
-    })
-    return this.auth.issueTokensForUser(identity.userId)
+    if (!user) throw new UnauthorizedException('No active user found for this store organization')
+    return this.auth.issueTokensForUser(user.id)
   }
 
   private safeEqual(a: string, b: string): boolean {

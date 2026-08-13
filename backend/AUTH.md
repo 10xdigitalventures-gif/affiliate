@@ -5,15 +5,11 @@ team invitations, and account self-service. Code lives in `src/auth/`.
 
 ## Token model
 
-- **Access token** — short-lived JWT (default 15 min, `JWT_ACCESS_TTL`). Browser
-  sessions receive it only in a `Secure`, `HttpOnly`, `SameSite=Lax` cookie.
-  Trusted machine/native clients may request bearer tokens only when an operator
-  explicitly sets `ALLOW_BEARER_AUTH=true`; it is disabled in production by
-  default. The token is signed with `JWT_ACCESS_SECRET`.
+- **Access token** — short-lived JWT (default 15 min, `JWT_ACCESS_TTL`). Sent as
+  `Authorization: Bearer <token>`. Signed with `JWT_ACCESS_SECRET`.
 - **Refresh token** — opaque 256-bit random string (default 7 days,
   `JWT_REFRESH_TTL`). Only its SHA-256 hash is stored (`RefreshToken.tokenHash`),
-  and the browser receives it only in a separate `Secure`, `HttpOnly` cookie,
-  so neither JavaScript nor a database leak exposes a usable browser session.
+  so a database leak never exposes usable tokens.
 
 ### Rotation + reuse detection
 
@@ -27,9 +23,9 @@ resets also revoke every active session.
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| POST | `/login` | public | 5/min per IP. Sets session cookies and returns the safe user context. |
-| POST | `/refresh` | refresh cookie | Atomically rotates the refresh token. |
-| POST | `/logout` | session | Revokes the presented refresh token and clears cookies. |
+| POST | `/login` | public | 5/min per IP. Returns access + refresh + user. |
+| POST | `/refresh` | public (token) | Rotates the refresh token. |
+| POST | `/logout` | access token | Revokes the presented refresh token. |
 | POST | `/logout-all` | access token | Revokes every session for the user. |
 | GET | `/me` | access token | Current user + permissions. |
 | POST | `/change-password` | access token | Verifies current password, revokes other sessions. |
@@ -62,16 +58,15 @@ reveal whether an email exists.
 
 - Passwords hashed with **argon2**; tokens hashed with **SHA-256** (high entropy).
 - Login, refresh, forgot/reset, and accept endpoints are throttled.
-- Session, reset and invitation tables are part of the committed Prisma
-  migration history. Production uses `npm run db:prepare` followed by
-  `npx prisma migrate deploy`; never use `db push` as a deployment fallback.
+- New tables: `RefreshToken`, `PasswordResetToken`, `Invitation`
+  (migration `20260710_auth_tokens`). Run `npx prisma migrate deploy` (or
+  `migrate dev`) and `npx prisma generate` locally.
 
 ## Web client (`web/lib/api.ts` → `Auth`)
 
 `Auth.login / refresh / logout / logoutAll / me / changePassword /
-forgotPassword / resetPassword / invite / acceptInvite`. Requests use
-`credentials: 'include'`; tokens are never written to `localStorage` or exposed
-to application JavaScript. The client removes credentials left by pre-v6 builds.
+forgotPassword / resetPassword / invite / acceptInvite`. Access + refresh tokens
+are persisted in `localStorage` (`token`, `refresh_token`).
 
 ## Tests
 

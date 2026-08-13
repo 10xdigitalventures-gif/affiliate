@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common'
 import type { Response } from 'express'
 import { Throttle } from '@nestjs/throttler'
 import { AuthService } from './auth.service'
@@ -6,52 +6,28 @@ import { LoginDto } from './dto/login.dto'
 import {
   AcceptInviteDto,
   ChangePasswordDto,
-  DeleteAccountDto,
   ForgotPasswordDto,
   InviteDto,
   LogoutDto,
   RefreshDto,
   ResetPasswordDto,
-  RequestEmailLoginCodeDto,
-  VerifyEmailLoginCodeDto,
-  SsoExchangeDto,
+  SelectWorkspaceDto,
   TwoFactorEnableDto,
   TwoFactorDisableDto,
   TwoFactorVerifyDto,
-  UpdateProfileDto,
 } from './dto/auth.dto'
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard'
 import { PermissionsGuard, RequirePermissions } from '../common/guards/permissions.guard'
 import { JwtPayload } from './jwt.strategy'
-import {
-  clearSessionCookies,
-  REFRESH_COOKIE,
-  readCookie,
-  setSessionCookies,
-} from './session-cookies'
 
 function clientCtx(req: any) {
   return {
     userAgent: req.headers?.['user-agent'],
-    // Express computes req.ip from the configured trusted-proxy boundary. Raw
-    // x-forwarded-for is attacker-controlled when a request bypasses a proxy.
-    ipAddress: typeof req.ip === 'string' ? req.ip.trim() || undefined : undefined,
+    ipAddress: (req.headers?.['x-forwarded-for']?.split(',')[0] || req.ip || '').trim() || undefined,
+    // Used to resolve the tenant for unauthenticated requests. `trust proxy` is
+    // enabled in main.ts, so x-forwarded-host is the client-facing hostname.
+    hostname: req.headers?.['x-forwarded-host'] || req.headers?.host || undefined,
   }
-}
-
-function completeSession(req: any, res: Response, result: { access_token: string; refresh_token: string; user: unknown }) {
-  // Browser sessions receive credentials only as Secure + HttpOnly cookies.
-  // Non-browser clients can opt into a bearer payload in development, or only
-  // when an operator explicitly enables it in production. This prevents an
-  // injected browser script from downgrading an HttpOnly session into tokens
-  // that JavaScript can read and exfiltrate.
-  if (String(req.headers?.['x-auth-mode'] || '').toLowerCase() === 'bearer') {
-    const bearerAllowed = process.env.NODE_ENV !== 'production' || process.env.ALLOW_BEARER_AUTH === 'true'
-    if (!bearerAllowed) throw new BadRequestException('Bearer token responses are disabled')
-    return result
-  }
-  setSessionCookies(res, result)
-  return { user: result.user }
 }
 
 @Controller('auth')
@@ -61,69 +37,42 @@ export class AuthController {
   // Brute-force protection: max 5 login attempts per minute per IP.
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @Post('login')
-  async login(@Body() dto: LoginDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
-    const result = await this.auth.login(dto, clientCtx(req))
-    if ('access_token' in result) return completeSession(req, res, result)
-    return result
+  login(@Body() dto: LoginDto, @Req() req: any) {
+    return this.auth.login(dto, clientCtx(req))
   }
 
-  // Passwordless login: request a short-lived code by email. The response is
-  // deliberately identical for known and unknown addresses.
-  @Throttle({ default: { ttl: 60_000, limit: 3 } })
-  @Post('email-code/request')
-  requestEmailCode(@Body() dto: RequestEmailLoginCodeDto) {
-    return this.auth.requestEmailLoginCode(dto)
-  }
-
+  // Second step when one address unlocks accounts in several workspaces.
+  // The challenge is only issued after the password has already been verified.
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
-  @Post('email-code/verify')
-  async verifyEmailCode(
-    @Body() dto: VerifyEmailLoginCodeDto,
-    @Req() req: any,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.auth.verifyEmailLoginCode(dto, clientCtx(req))
-    if ('access_token' in result) return completeSession(req, res, result)
-    return result
+  @Post('select-workspace')
+  selectWorkspace(@Body() dto: SelectWorkspaceDto, @Req() req: any) {
+    return this.auth.selectWorkspace(dto.challenge, dto.orgSlug, clientCtx(req))
   }
 
   @Throttle({ default: { ttl: 60_000, limit: 30 } })
   @Post('refresh')
-  async refresh(@Body() dto: RefreshDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
-    const raw = dto.refresh_token || readCookie(req, REFRESH_COOKIE)
-    if (!raw) throw new UnauthorizedException('Refresh token required')
-    const result = await this.auth.refresh(raw, clientCtx(req))
-    return completeSession(req, res, result)
+  refresh(@Body() dto: RefreshDto, @Req() req: any) {
+    return this.auth.refresh(dto.refresh_token, clientCtx(req))
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('logout')
-  async logout(@Body() dto: LogoutDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
+  logout(@Body() dto: LogoutDto, @Req() req: any) {
     const user = req.user as JwtPayload
-    const result = await this.auth.logout(dto.refresh_token || readCookie(req, REFRESH_COOKIE), user.sub)
-    clearSessionCookies(res)
-    return result
+    return this.auth.logout(dto.refresh_token, user.sub)
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('logout-all')
-  async logoutAll(@Req() req: any, @Res({ passthrough: true }) res: Response) {
+  logoutAll(@Req() req: any) {
     const user = req.user as JwtPayload
-    const result = await this.auth.logout(undefined, user.sub, true)
-    clearSessionCookies(res)
-    return result
+    return this.auth.logout(undefined, user.sub, true)
   }
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
   me(@Req() req: any) {
     return this.auth.me((req.user as JwtPayload).sub)
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Patch('me')
-  updateProfile(@Body() dto: UpdateProfileDto, @Req() req: any) {
-    return this.auth.updateProfile((req.user as JwtPayload).sub, dto)
   }
 
   @UseGuards(JwtAuthGuard)
@@ -135,8 +84,8 @@ export class AuthController {
   // Password reset (public, throttled to curb abuse/enumeration).
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @Post('forgot-password')
-  forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.auth.forgotPassword(dto)
+  forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req: any) {
+    return this.auth.forgotPassword(dto, clientCtx(req))
   }
 
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
@@ -157,9 +106,8 @@ export class AuthController {
   // Accept an invitation and set a password (public — token is the credential).
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('accept-invite')
-  async acceptInvite(@Body() dto: AcceptInviteDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
-    const result = await this.auth.acceptInvite(dto, clientCtx(req))
-    return completeSession(req, res, result)
+  acceptInvite(@Body() dto: AcceptInviteDto, @Req() req: any) {
+    return this.auth.acceptInvite(dto, clientCtx(req))
   }
 
   // ── Two-factor authentication ────────────────────────────────────────────
@@ -184,20 +132,15 @@ export class AuthController {
   // Exchange a login 2FA challenge for real tokens (public — challenge is the credential).
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('2fa/verify')
-  async twoFactorVerify(
-    @Body() dto: TwoFactorVerifyDto,
-    @Req() req: any,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.auth.verifyTwoFactor(dto.challenge, dto.code, clientCtx(req))
-    return completeSession(req, res, result)
+  twoFactorVerify(@Body() dto: TwoFactorVerifyDto, @Req() req: any) {
+    return this.auth.verifyTwoFactor(dto.challenge, dto.code, clientCtx(req))
   }
 
   // ── SSO (OIDC) ───────────────────────────────────────────────────────────
   // Returns the IdP authorize URL for an org's login page to redirect to.
   @Get('sso/:slug/authorize')
-  ssoAuthorize(@Param('slug') slug: string, @Query('next') next?: string) {
-    return this.auth.ssoAuthorizeUrl(slug, next)
+  ssoAuthorize(@Param('slug') slug: string, @Query('redirectUri') redirectUri?: string) {
+    return this.auth.ssoAuthorizeUrl(slug, redirectUri)
   }
 
   // IdP redirects the browser back here; we mint tokens then bounce to the app.
@@ -209,25 +152,17 @@ export class AuthController {
     @Res() res: Response,
   ) {
     try {
-      const { exchangeCode, redirectPath } = await this.auth.ssoCallback(code, state, clientCtx(req))
+      const { tokens, redirectUri } = await this.auth.ssoCallback(code, state, clientCtx(req))
+      const frag = new URLSearchParams({
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+      }).toString()
+      return res.redirect(`${redirectUri.replace(/\/$/, '')}/login/sso-callback#${frag}`)
+    } catch (err) {
       const base = process.env.APP_URL || 'http://localhost:3000'
-      const params = new URLSearchParams({ code: exchangeCode, next: redirectPath })
-      return res.redirect(`${base.replace(/\/$/, '')}/login/sso-callback?${params.toString()}`)
-    } catch {
-      const base = process.env.APP_URL || 'http://localhost:3000'
-      return res.redirect(`${base.replace(/\/$/, '')}/login?ssoError=sso_failed`)
+      const msg = encodeURIComponent((err as Error).message || 'SSO sign-in failed')
+      return res.redirect(`${base}/login?ssoError=${msg}`)
     }
-  }
-
-  @Throttle({ default: { ttl: 60_000, limit: 10 } })
-  @Post('sso/exchange')
-  async ssoExchange(
-    @Body() dto: SsoExchangeDto,
-    @Req() req: any,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    const result = await this.auth.exchangeSsoLogin(dto.code, clientCtx(req))
-    return completeSession(req, res, result)
   }
 
   // ── Account deletion (GDPR / right to erasure) ──────────────────────────
@@ -236,7 +171,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { ttl: 60_000, limit: 2 } })
   @Delete('me')
-  deleteAccount(@Body() dto: DeleteAccountDto, @Req() req: any) {
-    return this.auth.deleteAccount((req.user as JwtPayload).sub, dto.currentPassword)
+  deleteAccount(@Req() req: any) {
+    return this.auth.deleteAccount((req.user as JwtPayload).sub)
   }
 }

@@ -131,12 +131,7 @@ export function applicationReceived(ctx: OrgCtx & { firstName: string }) {
 }
 
 // Application approved (to affiliate)
-export function applicationApproved(ctx: OrgCtx & {
-  firstName: string
-  affiliateCode: string
-  portalUrl: string
-  setupRequired?: boolean
-}) {
+export function applicationApproved(ctx: OrgCtx & { firstName: string; affiliateCode: string; portalUrl: string }) {
   const brand = brandFromSettings(ctx.settings)
   const ov = overridesFromSettings(ctx.settings).applicationApproved ?? {}
   const vars: Vars = { firstName: ctx.firstName, orgName: ctx.orgName, affiliateCode: ctx.affiliateCode, portalUrl: ctx.portalUrl }
@@ -147,16 +142,9 @@ export function applicationApproved(ctx: OrgCtx & {
     : p(`Hi ${esc(ctx.firstName)},`) +
       p(`Great news - your application to <strong>${esc(ctx.orgName)}</strong> affiliate program has been <strong>approved</strong>.`) +
       p(`Your affiliate code is: <strong style="font-size:18px;color:${brand.primaryColor};letter-spacing:1px">${esc(ctx.affiliateCode)}</strong>`) +
-      (ctx.setupRequired
-        ? p(`Set your password to activate your account, then you will be taken to your private affiliate portal.`)
-        : p(`Log in to your affiliate portal to get your links, track clicks, and monitor earnings.`))
-  const buttonLabel = ctx.setupRequired ? 'Set up your affiliate account' : 'Go to your portal'
-  const html = wrap(ctx.orgName, heading, bodyHtml + btn(ctx.portalUrl, buttonLabel, brand), brand)
-  const text = ov.body
-    ? subst(ov.body, vars)
-    : ctx.setupRequired
-      ? `Hi ${ctx.firstName},\n\nYour application to ${ctx.orgName} affiliate program has been approved.\nYour affiliate code: ${ctx.affiliateCode}\nSet your password and activate your portal: ${ctx.portalUrl}`
-      : `Hi ${ctx.firstName},\n\nYour application to ${ctx.orgName} affiliate program has been approved.\nYour affiliate code: ${ctx.affiliateCode}\nPortal: ${ctx.portalUrl}`
+      p(`Log in to your affiliate portal to get your links, track clicks, and monitor earnings.`)
+  const html = wrap(ctx.orgName, heading, bodyHtml + btn(ctx.portalUrl, 'Go to your portal', brand), brand)
+  const text = ov.body ? subst(ov.body, vars) : `Hi ${ctx.firstName},\n\nYour application to ${ctx.orgName} affiliate program has been approved.\nYour affiliate code: ${ctx.affiliateCode}\nPortal: ${ctx.portalUrl}`
   return { subject, html, text }
 }
 
@@ -262,32 +250,5 @@ export function passwordReset(ctx: OrgCtx & { firstName: string; resetUrl: strin
       p(`If you did not request this, you can safely ignore this email - your password will not change.`)
   const html = wrap(ctx.orgName, heading, bodyHtml + btn(ctx.resetUrl, 'Reset password', brand), brand)
   const text = ov.body ? subst(ov.body, vars) : `Hi ${ctx.firstName},\n\nReset your password: ${ctx.resetUrl}\n(This link expires in ${ctx.ttlMinutes} minutes.)\n\nIf you did not request this, ignore this email.`
-  return { subject, html, text }
-}
-
-// Passwordless sign-in code (to user)
-export function emailLoginCode(ctx: OrgCtx & { firstName: string; code: string; ttlMinutes: number }) {
-  const brand = brandFromSettings(ctx.settings)
-  const ov = overridesFromSettings(ctx.settings).emailLoginCode ?? {}
-  const vars: Vars = {
-    firstName: ctx.firstName,
-    orgName: ctx.orgName,
-    code: ctx.code,
-    ttlMinutes: ctx.ttlMinutes,
-  }
-  const subject = ov.subject ? subst(ov.subject, vars) : `Your ${ctx.orgName} sign-in code`
-  const heading = ov.heading ? subst(ov.heading, vars) : 'Your sign-in code'
-  const intro = ov.body
-    ? bodyFromText(ov.body, vars)
-    : p(`Hi ${esc(ctx.firstName)},`) + p('Use this one-time code to securely sign in:')
-  // Always render the code and safety copy even when an administrator customizes
-  // the introduction, so a broken template cannot make login emails unusable.
-  const bodyHtml = intro +
-    `<div style="margin:20px 0;padding:16px;border-radius:10px;background:#f3f4f6;text-align:center;font-size:30px;font-weight:700;letter-spacing:8px;color:#111827">${esc(ctx.code)}</div>` +
-    p(`This code expires in ${ctx.ttlMinutes} minutes and can only be used once.`) +
-    p('If you did not request this code, you can safely ignore this email.')
-  const html = wrap(ctx.orgName, heading, bodyHtml, brand)
-  const textIntro = ov.body ? subst(ov.body, vars) : `Hi ${ctx.firstName},\n\nUse this one-time code to securely sign in.`
-  const text = `${textIntro}\n\nCode: ${ctx.code}\n\nIt expires in ${ctx.ttlMinutes} minutes and can only be used once.\n\nIf you did not request this, ignore this email.`
   return { subject, html, text }
 }

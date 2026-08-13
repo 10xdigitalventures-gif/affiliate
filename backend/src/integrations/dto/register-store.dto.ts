@@ -17,7 +17,6 @@ export class RegisterStoreDto {
   /** Optional signing secret the caller will use for its own webhook posts. */
   @IsOptional()
   @IsString()
-  @MaxLength(4096)
   webhookSecret?: string
 
   /** Optional platform/plugin version string for diagnostics. */

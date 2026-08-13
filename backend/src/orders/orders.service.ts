@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, NotFoundException } from '@nestjs/common'
 import { Prisma } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { AttributionService } from '../attribution/attribution.service'
@@ -23,46 +23,16 @@ export class OrdersService {
     const store = await this.prisma.store.findFirst({ where: { id: dto.storeId, organizationId } })
     if (!store) throw new NotFoundException('Store not found')
 
-    // Resolve a stable tenant-owned customer. `customerId` is retained as a
-    // backwards-compatible alias for a commerce-platform customer id; it is
-    // never trusted as an unscoped internal database id.
+    // Upsert customer (by email) if provided
     let customerId: string | null = null
-    const externalCustomerId = (dto.externalCustomerId ?? dto.customerId)?.trim() || null
-    const normalizedEmail = dto.customerEmail?.trim().toLowerCase() || null
-    if (externalCustomerId || normalizedEmail) {
-      const customer = await this.prisma.$transaction(async (tx) => {
-        const byExternal = externalCustomerId
-          ? await tx.customer.findUnique({
-              where: { organizationId_externalCustomerId: { organizationId, externalCustomerId } },
-            })
-          : null
-        const byEmail = normalizedEmail
-          ? await tx.customer.findUnique({
-              where: { organizationId_normalizedEmail: { organizationId, normalizedEmail } },
-            })
-          : null
-        if (byExternal && byEmail && byExternal.id !== byEmail.id) {
-          throw new ConflictException('Customer identity conflicts with an existing email record')
-        }
-        const existing = byExternal ?? byEmail
-        if (existing) {
-          return tx.customer.update({
-            where: { id: existing.id },
-            data: {
-              ...(externalCustomerId && !existing.externalCustomerId ? { externalCustomerId } : {}),
-              ...(normalizedEmail ? { email: normalizedEmail, normalizedEmail } : {}),
-            },
-          })
-        }
-        return tx.customer.create({
-          data: {
-            organizationId,
-            externalCustomerId,
-            email: normalizedEmail,
-            normalizedEmail,
-          },
-        })
-      })
+    if (dto.customerEmail) {
+      const customer = await this.prisma.customer.upsert({
+        where: { id: dto.customerId ?? '00000000-0000-0000-0000-000000000000' },
+        update: {},
+        create: { organizationId, email: dto.customerEmail },
+      }).catch(async () =>
+        this.prisma.customer.create({ data: { organizationId, email: dto.customerEmail } }),
+      )
       customerId = customer.id
     }
 
@@ -90,9 +60,7 @@ export class OrdersService {
     let utmTerm = dto.utmTerm ?? null
     const sourceClickId = attribution?.clickId ?? dto.clickId ?? null
     if (sourceClickId && (!trafficChannel || !utmSource || !adNetwork)) {
-      const click = await this.prisma.click.findFirst({
-        where: { id: sourceClickId, affiliate: { organizationId } },
-      })
+      const click = await this.prisma.click.findUnique({ where: { id: sourceClickId } })
       if (click) {
         const u = (click.utm ?? {}) as Record<string, string | undefined>
         trafficChannel = trafficChannel ?? (click.channel as 'paid' | 'organic' | null) ?? null
@@ -115,7 +83,6 @@ export class OrdersService {
     const order = await this.prisma.order.upsert({
       where: { storeId_externalOrderId: { storeId: dto.storeId, externalOrderId: dto.externalOrderId } },
       update: {
-        customerId: customerId ?? undefined,
         subtotal,
         total,
         status: dto.status ?? 'paid',
@@ -236,23 +203,12 @@ export class OrdersService {
   }
 
   async refund(organizationId: string, orderId: string, refundAmount: number) {
-    if (!Number.isFinite(refundAmount) || refundAmount < 0) {
-      throw new BadRequestException('Refund amount must be a non-negative number')
-    }
     const order = await this.prisma.order.findFirst({ where: { id: orderId, store: { organizationId } } })
     if (!order) throw new NotFoundException('Order not found')
-    const requested = new Prisma.Decimal(refundAmount)
-    if (requested.gt(order.total)) throw new BadRequestException('Refund amount cannot exceed the order total')
-    if (requested.lt(order.refundAmount)) {
-      throw new BadRequestException('Cumulative refund amount cannot decrease')
-    }
-    if (requested.eq(order.refundAmount)) return order
-    const claimed = await this.prisma.order.updateMany({
-      where: { id: orderId, refundAmount: order.refundAmount },
-      data: { refundAmount: requested },
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: { refundAmount: new Prisma.Decimal(refundAmount) },
     })
-    if (claimed.count !== 1) throw new ConflictException('Order refund changed concurrently; retry with the latest total')
-    const updated = await this.prisma.order.findUniqueOrThrow({ where: { id: orderId } })
     await this.commissions.handleRefund({ id: updated.id, total: updated.total, refundAmount: updated.refundAmount })
     return updated
   }
@@ -268,10 +224,8 @@ export class OrdersService {
 
   async list(organizationId: string, params: { skip?: number; take?: number }) {
     const where: Prisma.OrderWhereInput = { store: { organizationId } }
-    const skip = Number.isInteger(params.skip) ? Math.max(params.skip!, 0) : 0
-    const take = Number.isInteger(params.take) ? Math.min(Math.max(params.take!, 1), 100) : 25
     const [items, total] = await this.prisma.$transaction([
-      this.prisma.order.findMany({ where, skip, take, orderBy: { createdAt: 'desc' } }),
+      this.prisma.order.findMany({ where, skip: params.skip ?? 0, take: params.take ?? 25, orderBy: { createdAt: 'desc' } }),
       this.prisma.order.count({ where }),
     ])
     return { items, total }

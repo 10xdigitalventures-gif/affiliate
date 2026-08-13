@@ -1,8 +1,7 @@
-import { Transform } from 'class-transformer'
-import { IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator'
+import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator'
 
 export class BulkGenerateCouponsDto {
-  @IsUUID('4')
+  @IsString()
   storeId!: string
 
   @IsInt()
@@ -12,9 +11,6 @@ export class BulkGenerateCouponsDto {
 
   @IsOptional()
   @IsString()
-  @Transform(({ value }) => typeof value === 'string' ? value.trim().toUpperCase() : value)
-  @MaxLength(32)
-  @Matches(/^[A-Z0-9_-]*$/, { message: 'Coupon prefix may contain only letters, numbers, underscores and hyphens' })
   prefix?: string
 
   @IsOptional()
@@ -24,7 +20,7 @@ export class BulkGenerateCouponsDto {
   length?: number
 
   @IsOptional()
-  @IsUUID('4')
+  @IsString()
   affiliateId?: string
 
   @IsOptional()

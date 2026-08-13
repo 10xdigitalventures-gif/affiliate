@@ -1,13 +1,8 @@
-import { Transform } from 'class-transformer'
-import { IsIn, IsISO8601, IsOptional, IsString, IsUUID, Matches, MaxLength } from 'class-validator'
-import { COUPON_CODE_PATTERN } from './create-coupon.dto'
+import { IsIn, IsISO8601, IsOptional, IsString } from 'class-validator'
 
 export class UpdateCouponDto {
   @IsOptional()
   @IsString()
-  @Transform(({ value }) => typeof value === 'string' ? value.trim().toUpperCase() : value)
-  @MaxLength(64)
-  @Matches(COUPON_CODE_PATTERN, { message: 'Coupon code may contain only letters, numbers, underscores and hyphens' })
   code?: string
 
   @IsOptional()
@@ -20,7 +15,7 @@ export class UpdateCouponDto {
 
   // Empty string / null clears the assignment.
   @IsOptional()
-  @IsUUID('4')
+  @IsString()
   affiliateId?: string | null
 
   // ISO date; null clears the expiry.

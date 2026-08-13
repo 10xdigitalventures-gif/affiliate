@@ -24,12 +24,12 @@ admin approves → payable → (Phase 4) payout
 refund → POST /v1/orders/:id/refund → proportional reversal adjustment
 ```
 
-## Try it (after secure seed)
+## Try it (after seed)
 
 ```bash
 # 1. login
 curl -sX POST localhost:4000/v1/auth/login -H 'content-type: application/json' \
-  -d '{"email":"YOUR_ADMIN_EMAIL","password":"YOUR_ADMIN_PASSWORD"}'
+  -d '{"email":"admin@demo.test","password":"password123"}'
 
 # 2. ingest an order attributed via coupon (use TOKEN + STORE_ID from seed output)
 curl -sX POST localhost:4000/v1/orders/ingest -H "authorization: Bearer TOKEN" \

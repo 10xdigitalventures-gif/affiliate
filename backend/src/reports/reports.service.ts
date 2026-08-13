@@ -1,41 +1,36 @@
-import { BadRequestException, Injectable } from '@nestjs/common'
+import { Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
-import { buildCsv } from '../bulk/csv.util'
 
 const EXCLUDED = ['reversed', 'cancelled'] as const
-const MAX_REPORT_DAYS = 366
 
 export type DateRange = { from: Date; to: Date; days: number }
 
-function parseRange(args: { days?: number; from?: string; to?: string }): DateRange {
-  if (args.days !== undefined && (!Number.isFinite(args.days) || args.days < 1)) {
-    throw new BadRequestException('Report days must be a positive number')
+function toCsv(header: string[], rows: (string | number)[][]): string {
+  const esc = (v: string | number) => {
+    const s = String(v ?? '')
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
-  const isDateOnly = (value?: string) => !!value && /^\d{4}-\d{2}-\d{2}$/.test(value)
-  const to = isDateOnly(args.to) ? new Date(`${args.to}T23:59:59.999Z`) : args.to ? new Date(args.to) : new Date()
-  if (Number.isNaN(to.getTime())) throw new BadRequestException('Invalid report end date')
+  return [header.join(','), ...rows.map((r) => r.map(esc).join(','))].join('\n')
+}
+
+function parseRange(args: { days?: number; from?: string; to?: string }): DateRange {
+  const to = args.to ? new Date(args.to) : new Date()
+  // end of day for `to` when date-only string
+  if (args.to && args.to.length <= 10) to.setHours(23, 59, 59, 999)
 
   let from: Date
-  let days: number
   if (args.from) {
-    from = isDateOnly(args.from) ? new Date(`${args.from}T00:00:00.000Z`) : new Date(args.from)
-    if (Number.isNaN(from.getTime())) throw new BadRequestException('Invalid report start date')
-    if (from > to) throw new BadRequestException('Report start date must not be after the end date')
-    const startDay = Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate())
-    const endDay = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate())
-    days = Math.max(1, Math.floor((endDay - startDay) / 86_400_000) + 1)
+    from = new Date(args.from)
+    if (args.from.length <= 10) from.setHours(0, 0, 0, 0)
   } else {
-    days = args.days && args.days > 0 ? Math.floor(args.days) : 30
+    const days = args.days && args.days > 0 ? args.days : 30
     from = new Date(to)
-    from.setUTCHours(0, 0, 0, 0)
-    // A seven-day range includes today plus the preceding six calendar days.
-    from.setUTCDate(from.getUTCDate() - (days - 1))
+    from.setDate(from.getDate() - days)
+    from.setHours(0, 0, 0, 0)
   }
 
-  if (days > MAX_REPORT_DAYS) {
-    throw new BadRequestException(`Report range cannot exceed ${MAX_REPORT_DAYS} days`)
-  }
-
+  const ms = Math.max(0, to.getTime() - from.getTime())
+  const days = Math.max(1, Math.ceil(ms / 86_400_000))
   return { from, to, days }
 }
 
@@ -140,8 +135,7 @@ export class ReportsService {
     // Build day buckets covering the range
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date(to)
-      d.setUTCHours(0, 0, 0, 0)
-      d.setUTCDate(d.getUTCDate() - i)
+      d.setDate(d.getDate() - i)
       const key = d.toISOString().slice(0, 10)
       map.set(key, { date: key, revenue: 0, commissions: 0, orders: 0, clicks: 0 })
     }
@@ -175,7 +169,6 @@ export class ReportsService {
   ) {
     const range = parseRange(rangeInput)
     const { from, to } = range
-    const safeLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 500) : 5
 
     const grouped = await this.prisma.commission.groupBy({
       by: ['affiliateId'],
@@ -187,7 +180,7 @@ export class ReportsService {
       _sum: { amount: true },
       _count: { _all: true },
       orderBy: { _sum: { amount: 'desc' } },
-      take: safeLimit,
+      take: limit,
     })
 
     const ids = grouped.map((g) => g.affiliateId)
@@ -284,7 +277,6 @@ export class ReportsService {
     limit = 10,
   ) {
     const { from, to } = parseRange(rangeInput)
-    const safeLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 5000) : 10
     const items = await this.prisma.orderItem.findMany({
       where: {
         order: {
@@ -333,7 +325,7 @@ export class ReportsService {
       map.set(key, cur)
     }
 
-    return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, safeLimit)
+    return [...map.values()].sort((a, b) => b.revenue - a.revenue).slice(0, limit)
   }
 
   /** Category rollup from product line items. */
@@ -435,7 +427,7 @@ export class ReportsService {
         orderBy: { createdAt: 'desc' },
         take: 5000,
       })
-      return buildCsv(
+      return toCsv(
         ['externalOrderId', 'status', 'currency', 'subtotal', 'total', 'refundAmount', 'affiliateId', 'placedAt'],
         rows.map((r) => [
           r.externalOrderId,
@@ -452,7 +444,7 @@ export class ReportsService {
 
     if (entity === 'affiliates') {
       const top = await this.topAffiliates(organizationId, 500, rangeInput)
-      return buildCsv(
+      return toCsv(
         ['affiliateCode', 'commissions', 'orders', 'revenue', 'clicks', 'epc', 'conversionRate'],
         top.map((r) => [
           r.affiliateCode,
@@ -475,7 +467,7 @@ export class ReportsService {
       orderBy: { createdAt: 'desc' },
       take: 5000,
     })
-    return buildCsv(
+    return toCsv(
       ['id', 'affiliateCode', 'amount', 'currency', 'status', 'createdAt'],
       rows.map((r) => [
         r.id,

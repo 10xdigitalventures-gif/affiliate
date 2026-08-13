@@ -16,14 +16,6 @@ updates:
     groups:
       web-minor:
         update-types: [minor, patch]
-  - package-ecosystem: npm
-    directory: /marketing
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    groups:
-      marketing-minor:
-        update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -5,7 +5,6 @@ import { RequirePermissions } from '../common/guards/permissions.decorator'
 import { TaxService } from './tax.service'
 import { JwtPayload } from '../auth/jwt.strategy'
 import { TaxSettingsDto } from '../settings/dto/tax-settings.dto'
-import { TaxReviewDto } from './dto/tax-review.dto'
 
 @Controller('tax')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -41,7 +40,7 @@ export class TaxController {
 
   @Post('affiliates/:id/reject')
   @RequirePermissions('affiliates.write')
-  reject(@Req() req: { user: JwtPayload }, @Param('id') id: string, @Body() body: TaxReviewDto) {
+  reject(@Req() req: { user: JwtPayload }, @Param('id') id: string, @Body() body: { note?: string }) {
     return this.tax.setReview(req.user.organizationId, id, 'rejected', body.note)
   }
 

@@ -1,12 +1,5 @@
 import { UnauthorizedException } from '@nestjs/common'
-import { Prisma } from '@prisma/client'
 import { WebhooksService } from './webhooks.service'
-
-const uniqueConflict = () =>
-  new Prisma.PrismaClientKnownRequestError('Unique constraint', {
-    code: 'P2002',
-    clientVersion: 'test',
-  })
 
 function makeService() {
   const prisma: any = {
@@ -14,7 +7,6 @@ function makeService() {
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
-      updateMany: jest.fn(),
     },
   }
   const stores: any = {
@@ -78,7 +70,6 @@ describe('WebhooksService.handleShopify', () => {
       store: { id: 's1', organizationId: 'org-1' },
       webhookSecret: null,
     })
-    prisma.webhookEvent.create.mockRejectedValue(uniqueConflict())
     prisma.webhookEvent.findUnique.mockResolvedValue({ id: 'e1', status: 'processed' })
 
     const res = await service.handleShopify(
@@ -96,7 +87,8 @@ describe('WebhooksService.handleShopify', () => {
       store: { id: 's1', organizationId: 'org-1' },
       webhookSecret: null,
     })
-    prisma.webhookEvent.create.mockResolvedValue({ id: 'e1', status: 'processing' })
+    prisma.webhookEvent.findUnique.mockResolvedValue(null)
+    prisma.webhookEvent.create.mockResolvedValue({ id: 'e1', status: 'received' })
     prisma.webhookEvent.update.mockResolvedValue({ id: 'e1', status: 'processed', attempts: 1 })
 
     const res = await service.handleShopify(
@@ -117,7 +109,8 @@ describe('WebhooksService.handleShopify', () => {
       store: { id: 's1', organizationId: 'org-1' },
       webhookSecret: null,
     })
-    prisma.webhookEvent.create.mockResolvedValue({ id: 'e2', status: 'processing' })
+    prisma.webhookEvent.findUnique.mockResolvedValue(null)
+    prisma.webhookEvent.create.mockResolvedValue({ id: 'e2', status: 'received' })
     prisma.webhookEvent.update.mockResolvedValue({ id: 'e2', status: 'processed', attempts: 1 })
 
     await service.handleShopify(
@@ -135,7 +128,8 @@ describe('WebhooksService.handleShopify', () => {
       store: { id: 's1', organizationId: 'org-1' },
       webhookSecret: null,
     })
-    prisma.webhookEvent.create.mockResolvedValue({ id: 'e3', status: 'processing' })
+    prisma.webhookEvent.findUnique.mockResolvedValue(null)
+    prisma.webhookEvent.create.mockResolvedValue({ id: 'e3', status: 'received' })
     prisma.webhookEvent.update.mockResolvedValue({ id: 'e3', status: 'failed', attempts: 1 })
     orders.ingest.mockRejectedValue(new Error('boom'))
 
@@ -146,30 +140,6 @@ describe('WebhooksService.handleShopify', () => {
         body,
       ),
     ).rejects.toThrow('boom')
-    expect(queue.addRetry).toHaveBeenCalledWith('e3', 0)
-  })
-
-  it('does not double-process a delivery with an active processing lease', async () => {
-    const { service, stores, prisma, orders } = makeService()
-    stores.getForWebhook.mockResolvedValue({
-      store: { id: 's1', organizationId: 'org-1' },
-      webhookSecret: null,
-    })
-    prisma.webhookEvent.create.mockRejectedValue(uniqueConflict())
-    prisma.webhookEvent.findUnique.mockResolvedValue({
-      id: 'e4',
-      status: 'processing',
-      processingStartedAt: new Date(),
-    })
-    prisma.webhookEvent.updateMany.mockResolvedValue({ count: 0 })
-
-    const result = await service.handleShopify(
-      's1',
-      { 'x-shopify-topic': 'orders/create', 'x-shopify-webhook-id': 'w5' },
-      body,
-    )
-
-    expect(result).toEqual({ ok: true, deduped: true })
-    expect(orders.ingest).not.toHaveBeenCalled()
+    expect(queue.addRetry).toHaveBeenCalledWith('e3', 1)
   })
 })

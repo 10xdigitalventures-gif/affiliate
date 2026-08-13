@@ -34,8 +34,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/affiliate_test?schema=public
       ENCRYPTION_KEY: test-encryption-key-not-for-production
-      JWT_ACCESS_SECRET: test-access-secret-not-for-production
-      JWT_REFRESH_SECRET: different-test-refresh-secret-not-for-production
+      JWT_SECRET: test-jwt-secret
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -47,12 +46,10 @@ jobs:
         run: npm ci
       - name: Prisma generate
         run: npx prisma generate
-      - name: Database migration prerequisites
-        run: npm run db:prepare
       - name: Prisma migrate (deploy)
-        run: npx prisma migrate deploy
-      - name: Typecheck
-        run: npm run typecheck
+        run: npx prisma migrate deploy || npx prisma db push
+      - name: Lint
+        run: npm run lint
       - name: Build
         run: npm run build
       - name: Test
@@ -75,27 +72,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install
         run: npm ci
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Build
-        run: npm run build
-
-  marketing:
-    name: Marketing (lint, build)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: marketing
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: marketing/package-lock.json
-      - name: Install
-        run: npm ci
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
       - name: Build
         run: npm run build

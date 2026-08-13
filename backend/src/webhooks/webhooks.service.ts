@@ -1,5 +1,5 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common'
-import { Prisma, WebhookEvent } from '@prisma/client'
+import { WebhookEvent } from '@prisma/client'
 import { PrismaService } from '../prisma/prisma.service'
 import { StoresService } from '../stores/stores.service'
 import { OrdersService } from '../orders/orders.service'
@@ -162,10 +162,6 @@ export class WebhooksService {
     )
   }
 
-  private isUniqueConflict(error: unknown): boolean {
-    return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
-  }
-
   private async process(args: {
     platform: 'shopify' | 'woocommerce' | 'ghl'
     store: { id: string; organizationId: string }
@@ -177,42 +173,15 @@ export class WebhooksService {
   }) {
     const { platform, store, topic, idempotencyKey, payload } = args
 
-    // Claim the unique delivery before touching an order. Insert-first closes
-    // the find-then-create race between simultaneous provider retries. A
-    // five-minute lease lets a later retry recover after a process crash.
-    const now = new Date()
-    const staleBefore = new Date(now.getTime() - 5 * 60 * 1000)
-    let event: WebhookEvent
-    try {
-      event = await this.prisma.webhookEvent.create({
-        data: {
-          storeId: store.id,
-          platform,
-          topic,
-          idempotencyKey,
-          payload,
-          status: 'processing',
-          processingStartedAt: now,
-        },
-      })
-    } catch (error) {
-      if (!this.isUniqueConflict(error)) throw error
-      const existing = await this.prisma.webhookEvent.findUnique({ where: { idempotencyKey } })
-      if (!existing || existing.status === 'processed') return { ok: true, deduped: true }
+    // Idempotency: never process the same delivery twice.
+    const existing = await this.prisma.webhookEvent.findUnique({ where: { idempotencyKey } })
+    if (existing?.status === 'processed') return { ok: true, deduped: true }
 
-      const claim = await this.prisma.webhookEvent.updateMany({
-        where: {
-          id: existing.id,
-          OR: [
-            { status: { in: ['received', 'failed'] } },
-            { status: 'processing', processingStartedAt: { lt: staleBefore } },
-          ],
-        },
-        data: { status: 'processing', processingStartedAt: now },
-      })
-      if (claim.count !== 1) return { ok: true, deduped: true }
-      event = existing
-    }
+    const event =
+      existing ??
+      (await this.prisma.webhookEvent.create({
+        data: { storeId: store.id, platform, topic, idempotencyKey, payload, status: 'received' },
+      }))
 
     try {
       if (/uninstall/i.test(topic)) {
@@ -226,18 +195,18 @@ export class WebhooksService {
       }
       await this.prisma.webhookEvent.update({
         where: { id: event.id },
-        data: { status: 'processed', processingStartedAt: null, attempts: { increment: 1 } },
+        data: { status: 'processed', attempts: { increment: 1 } },
       })
       await this.stores.recordSync(store.id, 'connected')
       return { ok: true, topic }
     } catch (err) {
       const updated = await this.prisma.webhookEvent.update({
         where: { id: event.id },
-        data: { status: 'failed', processingStartedAt: null, attempts: { increment: 1 } },
+        data: { status: 'failed', attempts: { increment: 1 } },
       })
       this.logger.error(`Webhook ${idempotencyKey} failed: ${(err as Error).message}`)
       // Schedule retry with exponential backoff (max 3 attempts total)
-      await this.queue.addRetry(event.id, Math.max(updated.attempts - 1, 0)).catch(() => {})
+      await this.queue.addRetry(event.id, updated.attempts).catch(() => {})
       throw err
     }
   }

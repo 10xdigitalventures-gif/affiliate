@@ -1,7 +1,6 @@
-import { Controller, Get, Post, Headers, Query, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common'
+import { Controller, Get, Post, Headers, Query, Req, Res, UseGuards } from '@nestjs/common'
 import type { Response } from 'express'
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger'
-import { setEmbeddedSessionCookies } from '../auth/session-cookies'
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard'
 import { PermissionsGuard } from '../common/guards/permissions.guard'
 import { RequirePermissions } from '../common/guards/permissions.decorator'
@@ -29,8 +28,8 @@ export class ShopifyAppController {
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions('stores.write')
   @Get('install-url')
-  async installUrl(@Req() req: { user: JwtPayload }, @Query('shop') shop: string) {
-    const url = await this.shopify.buildInstallUrl(shop, req.user.organizationId)
+  installUrl(@Req() req: { user: JwtPayload }, @Query('shop') shop: string) {
+    const url = this.shopify.buildInstallUrl(shop, req.user.organizationId)
     return { url, configured: this.shopify.isConfigured() }
   }
 
@@ -40,33 +39,17 @@ export class ShopifyAppController {
     try {
       const result = await this.shopify.handleCallback(query)
       return res.redirect(result.redirectUrl)
-    } catch {
+    } catch (err: any) {
       const dashboard = (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '')
-      return res.redirect(`${dashboard}/stores?error=shopify_install_failed`)
+      const reason = encodeURIComponent(err?.message ?? 'install_failed')
+      return res.redirect(`${dashboard}/stores?error=${reason}`)
     }
   }
 
   @ApiOperation({ summary: 'Embedded app token exchange: Shopify session token -> platform tokens.' })
   @Post('token-exchange')
-  async tokenExchange(
-    @Headers('authorization') authorization: string | undefined,
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  async tokenExchange(@Headers('authorization') authorization?: string) {
     const token = (authorization || '').replace(/^Bearer\s+/i, '').trim()
-    const result = await this.shopify.exchangeSessionForTokens(token)
-    setEmbeddedSessionCookies(res, result)
-    return { user: result.user }
-  }
-
-  @ApiBearerAuth('jwt')
-  @ApiOperation({ summary: 'Link the signed-in platform user to a Shopify staff session.' })
-  @UseGuards(JwtAuthGuard)
-  @Post('link-identity')
-  linkIdentity(
-    @Req() req: { user: JwtPayload },
-    @Headers('x-shopify-session-token') sessionToken?: string,
-  ) {
-    if (!sessionToken) throw new UnauthorizedException('Shopify session token required')
-    return this.shopify.linkSessionIdentity(sessionToken, req.user.organizationId, req.user.sub)
+    return this.shopify.exchangeSessionForTokens(token)
   }
 }

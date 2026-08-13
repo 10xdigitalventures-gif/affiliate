@@ -4,15 +4,11 @@ import { PermissionsGuard } from '../common/guards/permissions.guard'
 import { RequirePermissions } from '../common/guards/permissions.decorator'
 import { BulkService, ExportEntity } from './bulk.service'
 import { JwtPayload } from '../auth/jwt.strategy'
-import { FeatureGuard } from '../entitlements/feature.guard'
-import { RequireFeature } from '../entitlements/require-feature.decorator'
-import { ImportAffiliatesDto } from './dto/import-affiliates.dto'
 
 const EXPORT_ENTITIES: ExportEntity[] = ['affiliates', 'commissions', 'orders', 'payouts']
 
 @Controller('bulk')
-@UseGuards(JwtAuthGuard, PermissionsGuard, FeatureGuard)
-@RequireFeature('bulkOperations')
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 export class BulkController {
   constructor(private readonly bulk: BulkService) {}
 
@@ -41,7 +37,10 @@ export class BulkController {
    */
   @Post('import/affiliates')
   @RequirePermissions('affiliates.write')
-  importAffiliates(@Req() req: { user: JwtPayload }, @Body() body: ImportAffiliatesDto) {
+  importAffiliates(@Req() req: { user: JwtPayload }, @Body() body: { csv?: string }) {
+    if (!body?.csv || typeof body.csv !== 'string' || body.csv.trim() === '') {
+      throw new BadRequestException('Provide CSV content in the "csv" field')
+    }
     return this.bulk.importAffiliates(req.user.organizationId, body.csv)
   }
 }

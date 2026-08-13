@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, NotFoundException } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { SignupSettingsDto } from './dto/signup-settings.dto'
 import { SubAffiliateSettingsDto } from './dto/sub-affiliate-settings.dto'
@@ -8,8 +8,6 @@ import { CommissionChannelSettingsDto } from './dto/commission-channel-settings.
 import { CustomerTypeSettingsDto } from './dto/customer-type-settings.dto'
 import { SsoSettingsDto } from './dto/sso-settings.dto'
 import { AttributionService, AttributionSettings } from '../attribution/attribution.service'
-import { CryptoService } from '../common/crypto/crypto.service'
-import { assertSafeOutboundUrl } from '../common/security/outbound-http'
 
 export interface NotificationSettings {
   inAppEnabled: boolean
@@ -68,7 +66,6 @@ export interface SignupSettings {
   signupEnabled: boolean
   autoApprove: boolean
   requireWebsite: boolean
-  allowAffiliateLinkCreation: boolean
   branding: SignupBranding
   embedBranding: EmbedBranding
   slug: string
@@ -100,7 +97,6 @@ const DEFAULTS = {
   signupEnabled: true,
   autoApprove: false,
   requireWebsite: false,
-  allowAffiliateLinkCreation: true,
 }
 
 const SUB_AFFILIATE_DEFAULTS: SubAffiliateSettings = {
@@ -115,7 +111,6 @@ export class SettingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly attribution: AttributionService,
-    private readonly crypto: CryptoService,
   ) {}
 
   private async getOrg(organizationId: string) {
@@ -152,9 +147,6 @@ export class SettingsService {
       signupEnabled: stored.signupEnabled !== undefined ? Boolean(stored.signupEnabled) : DEFAULTS.signupEnabled,
       autoApprove: stored.autoApprove !== undefined ? Boolean(stored.autoApprove) : DEFAULTS.autoApprove,
       requireWebsite: stored.requireWebsite !== undefined ? Boolean(stored.requireWebsite) : DEFAULTS.requireWebsite,
-      allowAffiliateLinkCreation: stored.allowAffiliateLinkCreation !== undefined
-        ? Boolean(stored.allowAffiliateLinkCreation)
-        : DEFAULTS.allowAffiliateLinkCreation,
       branding,
       embedBranding,
       slug: org.slug,
@@ -191,9 +183,6 @@ export class SettingsService {
       signupEnabled: dto.signupEnabled,
       autoApprove: dto.autoApprove,
       ...(dto.requireWebsite !== undefined ? { requireWebsite: dto.requireWebsite } : {}),
-      ...(dto.allowAffiliateLinkCreation !== undefined
-        ? { allowAffiliateLinkCreation: dto.allowAffiliateLinkCreation }
-        : {}),
       signupBranding,
       signupEmbedBranding,
     }
@@ -323,7 +312,9 @@ export class SettingsService {
       provider: str(s?.provider) || 'oidc',
       clientId: str(s?.clientId),
       hasClientSecret: typeof s?.clientSecret === 'string' && s.clientSecret.length > 0,
-      issuerUrl: str(s?.issuerUrl),
+      authorizationUrl: str(s?.authorizationUrl),
+      tokenUrl: str(s?.tokenUrl),
+      userinfoUrl: str(s?.userinfoUrl),
       scopes: str(s?.scopes) || 'openid email profile',
       allowedDomains: Array.isArray(s?.allowedDomains)
         ? (s!.allowedDomains as unknown[]).filter((d): d is string => typeof d === 'string')
@@ -340,38 +331,20 @@ export class SettingsService {
     const org = await this.getOrg(organizationId)
     const current = (org.settings ?? {}) as Record<string, unknown>
     const prev = (current.sso ?? {}) as Record<string, unknown>
-    if (dto.issuerUrl) await assertSafeOutboundUrl(dto.issuerUrl)
-    if (dto.defaultRoleId) {
-      const role = await this.prisma.role.findFirst({
-        where: { id: dto.defaultRoleId, OR: [{ organizationId }, { organizationId: null }] },
-        select: { id: true },
-      })
-      if (!role) throw new BadRequestException('SSO default role does not belong to this workspace')
-    }
-    const encryptedSecret = dto.clientSecret ? this.crypto.encryptText(dto.clientSecret) : undefined
     const sso: Record<string, unknown> = {
       ...prev,
       enabled: dto.enabled,
       ...(dto.provider !== undefined ? { provider: dto.provider } : {}),
       ...(dto.clientId !== undefined ? { clientId: dto.clientId } : {}),
       // Only overwrite the secret when a non-empty value is provided.
-      ...(encryptedSecret ? { clientSecret: encryptedSecret } : {}),
-      ...(dto.issuerUrl !== undefined ? { issuerUrl: dto.issuerUrl.replace(/\/$/, '') } : {}),
+      ...(dto.clientSecret ? { clientSecret: dto.clientSecret } : {}),
+      ...(dto.authorizationUrl !== undefined ? { authorizationUrl: dto.authorizationUrl } : {}),
+      ...(dto.tokenUrl !== undefined ? { tokenUrl: dto.tokenUrl } : {}),
+      ...(dto.userinfoUrl !== undefined ? { userinfoUrl: dto.userinfoUrl } : {}),
       ...(dto.scopes !== undefined ? { scopes: dto.scopes } : {}),
       ...(dto.allowedDomains !== undefined ? { allowedDomains: dto.allowedDomains } : {}),
       ...(dto.autoProvision !== undefined ? { autoProvision: dto.autoProvision } : {}),
       ...(dto.defaultRoleId !== undefined ? { defaultRoleId: dto.defaultRoleId } : {}),
-    }
-    if (dto.enabled) {
-      const effectiveSecret = encryptedSecret || (typeof prev.clientSecret === 'string' ? prev.clientSecret : '')
-      const effectiveIssuer = dto.issuerUrl ?? (typeof prev.issuerUrl === 'string' ? prev.issuerUrl : '')
-      const effectiveClientId = dto.clientId ?? (typeof prev.clientId === 'string' ? prev.clientId : '')
-      if (!effectiveSecret || !effectiveIssuer || !effectiveClientId) {
-        throw new BadRequestException('Issuer URL, client ID and client secret are required to enable SSO')
-      }
-      if (dto.autoProvision === true && !dto.defaultRoleId && !prev.defaultRoleId) {
-        throw new BadRequestException('A default role is required when SSO auto-provisioning is enabled')
-      }
     }
     await this.prisma.organization.update({
       where: { id: organizationId },

@@ -11,11 +11,7 @@ import { randomUUID } from 'crypto'
 export class RequestIdMiddleware implements NestMiddleware {
   use(req: any, res: any, next: () => void) {
     const incoming = req.headers['x-request-id']
-    // Never copy arbitrary header bytes into logs/responses. Accept a compact,
-    // printable correlation id; replace everything else with a server UUID.
-    const id = typeof incoming === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(incoming)
-      ? incoming
-      : randomUUID()
+    const id = typeof incoming === 'string' && incoming.length > 0 ? incoming : randomUUID()
     req.id = id
     res.setHeader('x-request-id', id)
     next()

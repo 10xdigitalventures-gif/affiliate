@@ -1,11 +1,12 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Auth, Sso } from '@/lib/api'
+import { Auth, setTokens } from '@/lib/api'
 
 /**
- * The backend redirects here with a one-time exchange code. Real credentials
- * are delivered only through Secure + HttpOnly cookies.
+ * The backend SSO callback issues tokens then redirects the browser here with
+ * them in the URL fragment (#access_token=...&refresh_token=...). We stash the
+ * tokens, hydrate the user, and route to the right home.
  */
 export default function SsoCallbackPage() {
   const router = useRouter()
@@ -13,22 +14,25 @@ export default function SsoCallbackPage() {
 
   useEffect(() => {
     async function run() {
-      const params = new URLSearchParams(window.location.search)
-      const code = params.get('code')
-      if (!code) {
-        setError('Missing sign-in code. Please try again.')
+      const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash
+      const params = new URLSearchParams(hash)
+      const access = params.get('access_token')
+      const refresh = params.get('refresh_token')
+      if (!access || !refresh) {
+        setError('Missing sign-in tokens. Please try again.')
         return
       }
+      setTokens(access, refresh)
+      // Clean the fragment so tokens are not left in history.
+      window.history.replaceState(null, '', '/login/sso-callback')
       try {
-        const result = await Sso.exchange(code)
-        window.history.replaceState(null, '', '/login/sso-callback')
-        const me = result.user || await Auth.me()
+        const me = await Auth.me()
         window.localStorage.setItem('user', JSON.stringify(me))
-        if (me.isSuperAdmin) router.replace('/admin')
-        else if (me.affiliateId && (me.permissions?.length ?? 0) === 0) router.replace('/portal')
+        if (me.affiliateId && (me.permissions?.length ?? 0) === 0) router.replace('/portal')
         else router.replace('/dashboard')
-      } catch (err) {
-        setError((err as Error).message || 'Sign-in could not be completed.')
+      } catch {
+        // Even if /me fails we have tokens; send to dashboard which will re-check.
+        router.replace('/dashboard')
       }
     }
     run()

@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Portal } from '@/lib/api'
 import { useFetch, money, shortDate } from '@/lib/use-fetch'
 import { PageHeader } from '@/components/ui/page-header'
@@ -10,52 +10,19 @@ import { Card } from '@/components/ui/card'
 import type { PayoutRow, PayoutMethodRecord } from '@/lib/api'
 
 const ALL_METHODS = ['bank', 'wise', 'paypal', 'stripe', 'manual', 'crypto']
-const METHOD_FIELDS: Record<string, Array<{ key: string; label: string; type?: string }>> = {
-  bank: [
-    { key: 'accountHolder', label: 'Account holder' },
-    { key: 'bankName', label: 'Bank name' },
-    { key: 'accountNumber', label: 'Account number' },
-    { key: 'routingNumber', label: 'Routing number (optional)' },
-    { key: 'iban', label: 'IBAN (optional)' },
-    { key: 'country', label: 'Country code' },
-  ],
-  wise: [{ key: 'recipientId', label: 'Wise recipient ID' }],
-  paypal: [{ key: 'email', label: 'PayPal email', type: 'email' }],
-  stripe: [{ key: 'accountId', label: 'Stripe connected account ID' }],
-  manual: [{ key: 'instructions', label: 'Payment instructions' }],
-  crypto: [
-    { key: 'network', label: 'Network' },
-    { key: 'walletAddress', label: 'Wallet address' },
-  ],
-}
 
 export default function PortalPayouts() {
   const [requestBusy, setRequestBusy] = useState(false)
   const [addBusy, setAddBusy] = useState(false)
-  const [selectedMethod, setSelectedMethod] = useState('')
+  const [selectedMethod, setSelectedMethod] = useState('bank')
   const [newMethod, setNewMethod] = useState('bank')
-  const [newDetails, setNewDetails] = useState<Record<string, string>>({})
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   const payouts = useFetch(() => Portal.payouts(), [])
   const methods = useFetch(() => Portal.payoutMethods(), [])
 
-  useEffect(() => {
-    const saved = methods.data ?? []
-    if (!saved.length) {
-      setSelectedMethod('')
-      return
-    }
-    const preferred = saved.find((method) => method.isDefault) ?? saved[0]
-    if (!saved.some((method) => method.method === selectedMethod)) setSelectedMethod(preferred.method)
-  }, [methods.data, selectedMethod])
-
   async function requestPayout() {
-    if (!selectedMethod) {
-      setErr('Add a payout method before requesting a payout.')
-      return
-    }
     setRequestBusy(true)
     setErr(null)
     setMsg(null)
@@ -73,8 +40,7 @@ export default function PortalPayouts() {
   async function addMethod() {
     setAddBusy(true)
     try {
-      await Portal.addPayoutMethod(newMethod, newDetails)
-      setNewDetails({})
+      await Portal.addPayoutMethod(newMethod)
       methods.refresh()
     } catch (e) {
       setErr((e as Error).message)
@@ -87,17 +53,6 @@ export default function PortalPayouts() {
     try {
       await Portal.deletePayoutMethod(id)
       methods.refresh()
-    } catch (e) {
-      setErr((e as Error).message)
-    }
-  }
-
-  async function makeDefault(id: string) {
-    setErr(null)
-    try {
-      const updated = await Portal.setDefaultPayoutMethod(id)
-      setSelectedMethod(updated.method)
-      await methods.refresh()
     } catch (e) {
       setErr((e as Error).message)
     }
@@ -123,10 +78,9 @@ export default function PortalPayouts() {
             value={selectedMethod}
             onChange={(e) => setSelectedMethod(e.target.value)}
           >
-            <option value="">Select a saved method</option>
-            {(methods.data ?? []).map((method) => <option key={method.id} value={method.method} className="capitalize">{method.method}{method.isDefault ? ' (default)' : ''}</option>)}
+            {ALL_METHODS.map((m) => <option key={m} value={m} className="capitalize">{m}</option>)}
           </select>
-          <Button disabled={requestBusy || !selectedMethod} onClick={requestPayout} className="w-full justify-center">
+          <Button disabled={requestBusy} onClick={requestPayout} className="w-full justify-center">
             {requestBusy ? 'Requesting...' : 'Request payout'}
           </Button>
           {msg && <p className="text-xs text-success mt-1">{msg}</p>}
@@ -141,40 +95,29 @@ export default function PortalPayouts() {
                 <p className="text-xs text-muted">No methods saved yet</p>
               )}
               {(methods.data ?? []).map((m: PayoutMethodRecord) => (
-                <div key={m.id} className="flex items-center justify-between gap-2 text-sm">
+                <div key={m.id} className="flex items-center justify-between text-sm">
                   <span className="capitalize flex items-center gap-1.5">
                     {m.method}
                     {m.isDefault && <span className="text-2xs text-success">(default)</span>}
                   </span>
-                  <div className="flex items-center gap-2">
-                    {!m.isDefault && <button onClick={() => makeDefault(m.id)} className="text-2xs text-brand hover:underline">Make default</button>}
-                    <button onClick={() => removeMethod(m.id)} className="text-2xs text-danger hover:underline">Remove</button>
-                  </div>
+                  <button
+                    onClick={() => removeMethod(m.id)}
+                    className="text-2xs text-danger hover:underline"
+                  >
+                    Remove
+                  </button>
                 </div>
               ))}
             </div>
-            <div className="space-y-2 pt-2 border-t border-line">
+            <div className="flex gap-2 pt-1 border-t border-line">
               <select
-                className="w-full rounded-md border border-line px-2 py-1.5 text-xs capitalize"
+                className="flex-1 rounded-md border border-line px-2 py-1 text-xs capitalize"
                 value={newMethod}
-                onChange={(e) => { setNewMethod(e.target.value); setNewDetails({}) }}
+                onChange={(e) => setNewMethod(e.target.value)}
               >
                 {ALL_METHODS.map((m) => <option key={m} value={m} className="capitalize">{m}</option>)}
               </select>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {(METHOD_FIELDS[newMethod] ?? []).map((field) => (
-                  <label key={field.key} className="text-2xs text-muted">
-                    {field.label}
-                    <input
-                      type={field.type || 'text'}
-                      value={newDetails[field.key] || ''}
-                      onChange={(event) => setNewDetails((current) => ({ ...current, [field.key]: event.target.value }))}
-                      className="mt-0.5 w-full rounded-md border border-line px-2 py-1.5 text-xs text-ink"
-                    />
-                  </label>
-                ))}
-              </div>
-              <Button size="sm" variant="outline" disabled={addBusy} onClick={addMethod} className="w-full justify-center">
+              <Button size="sm" variant="outline" disabled={addBusy} onClick={addMethod}>
                 {addBusy ? 'Adding...' : 'Add'}
               </Button>
             </div>

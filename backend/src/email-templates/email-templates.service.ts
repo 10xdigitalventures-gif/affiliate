@@ -20,15 +20,6 @@ export interface TemplateDef {
  */
 export const TEMPLATE_DEFS: TemplateDef[] = [
   {
-    key: 'emailLoginCode',
-    label: 'Email sign-in code',
-    description: 'Sent when a user requests a one-time code to sign in.',
-    variables: ['firstName', 'orgName', 'code', 'ttlMinutes'],
-    defaultSubject: 'Your {orgName} sign-in code',
-    defaultHeading: 'Your sign-in code',
-    defaultBody: 'Hi {firstName},\nUse this one-time code to securely sign in.',
-  },
-  {
     key: 'userInvite',
     label: 'Team / affiliate invitation',
     description: 'Sent when you invite someone to join your workspace.',
@@ -181,8 +172,6 @@ export class EmailTemplatesService {
 function renderSample(key: string, orgName: string, settings: unknown): { subject: string; html: string } {
   const portalUrl = 'https://app.example.com/portal'
   switch (key) {
-    case 'emailLoginCode':
-      return T.emailLoginCode({ orgName, firstName: 'Alex', code: '482913', ttlMinutes: 10, settings })
     case 'userInvite':
       return T.userInvite({ orgName, inviteUrl: 'https://app.example.com/accept-invite?token=sample', ttlDays: 7, settings })
     case 'applicationReceived':

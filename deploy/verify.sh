@@ -4,8 +4,8 @@
 # Override:  MARKETING_DOMAIN=mysite.com APP_DOMAIN=app.mysite.com bash deploy/verify.sh
 set -u
 
-MARKETING_DOMAIN="${MARKETING_DOMAIN:-web.mentoringhub.online}"
-APP_DOMAIN="${APP_DOMAIN:-affiliate.mentoringhub.online}"
+MARKETING_DOMAIN="${MARKETING_DOMAIN:-10xaffiliate.com}"
+APP_DOMAIN="${APP_DOMAIN:-app.10xaffiliate.com}"
 API_PREFIX="${API_PREFIX:-v1}"
 HEALTH_PATH="${HEALTH_PATH:-$API_PREFIX/health}"
 
@@ -16,7 +16,7 @@ bad() { echo "  [FAIL] $1"; fail=$((fail+1)); }
 echo "== 1. PM2 processes =="
 if command -v pm2 >/dev/null 2>&1; then
   L="$(pm2 jlist 2>/dev/null)"
-  echo "$L" | grep -q 'affiliate-backend'   && ok "affiliate-backend registered"   || bad "affiliate-backend missing"
+  echo "$L" | grep -q 'affiliate-api'       && ok "affiliate-api registered"       || bad "affiliate-api missing"
   echo "$L" | grep -q 'affiliate-web'       && ok "affiliate-web registered"       || bad "affiliate-web missing"
   echo "$L" | grep -q 'affiliate-marketing' && ok "affiliate-marketing registered" || bad "affiliate-marketing missing"
 else
@@ -24,8 +24,8 @@ else
 fi
 
 echo "== 2. Local app ports =="
-curl -fsS -o /dev/null "http://127.0.0.1:4100/$HEALTH_PATH" && ok "API :4100 /$HEALTH_PATH" || bad "API :4100 health failed (set HEALTH_PATH if route differs)"
-curl -fsS -o /dev/null "http://127.0.0.1:3100"             && ok "web :3100 responding"      || bad "web :3100 not responding"
+curl -fsS -o /dev/null "http://127.0.0.1:4000/$HEALTH_PATH" && ok "API :4000 /$HEALTH_PATH" || bad "API :4000 health failed (set HEALTH_PATH if route differs)"
+curl -fsS -o /dev/null "http://127.0.0.1:3000"             && ok "web :3000 responding"      || bad "web :3000 not responding"
 curl -fsS -o /dev/null "http://127.0.0.1:3002"             && ok "marketing :3002 responding" || bad "marketing :3002 not responding"
 
 echo "== 3. Nginx =="

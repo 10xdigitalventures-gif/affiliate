@@ -24,8 +24,8 @@ export class DomainsController {
   @Get('tracking-base')
   async trackingBase(@Req() req: { user: JwtPayload }) {
     const custom = await this.domains.trackingBaseUrl(req.user.organizationId)
-    const fallback = (process.env.TRACKING_BASE_URL || process.env.API_PUBLIC_URL || 'https://affiliate.mentoringhub.online/v1').replace(/\/$/, '')
-    return { baseUrl: custom ?? fallback, custom: !!custom, organizationId: req.user.organizationId }
+    const fallback = (process.env.TRACKING_BASE_URL || process.env.API_URL || 'http://localhost:4000/v1').replace(/\/$/, '')
+    return { baseUrl: custom ?? fallback, custom: !!custom }
   }
 
   @Post()

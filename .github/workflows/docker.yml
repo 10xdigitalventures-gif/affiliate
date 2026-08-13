@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [backend, web, marketing]
+        service: [backend, web]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx

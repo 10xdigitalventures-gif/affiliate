@@ -7,7 +7,7 @@ import { site } from '@/lib/site'
 export const metadata: Metadata = {
   title: { default: site.name + ' \u2014 ' + site.tagline, template: '%s \u2014 ' + site.name },
   description: site.description,
-  metadataBase: new URL('https://web.mentoringhub.online'),
+  metadataBase: new URL('https://10xaffiliate.com'),
   openGraph: { title: site.name, description: site.description, type: 'website' },
 }
 

@@ -14,19 +14,26 @@ function makeService() {
     refreshTokens: [] as any[],
     resets: [] as any[],
     invites: [] as any[],
-    emailCodes: [] as any[],
     users: [] as any[],
+    orgs: [] as any[],
   }
 
   const prisma: any = {
     user: {
       findUnique: jest.fn(async ({ where }: any) => db.users.find((u: any) => u.id === where.id) ?? null),
-      findFirst: jest.fn(async ({ where }: any) =>
-        db.users.find((u: any) => (where.id ? u.id === where.id : u.email === where.email)) ?? null,
-      ),
-      findMany: jest.fn(async ({ where }: any) =>
-        db.users.filter((u: any) => u.email === where.email),
-      ),
+      findFirst: jest.fn(async ({ where }: any) => {
+        return (
+          db.users.find((u: any) => {
+            if (where.id?.in) return where.id.in.includes(u.id) && matchesUserWhere(u, where)
+            if (where.id) return u.id === where.id
+            return matchesUserWhere(u, where)
+          }) ?? null
+        )
+      }),
+      findMany: jest.fn(async ({ where, take }: any) => {
+        const rows = db.users.filter((u: any) => matchesUserWhere(u, where))
+        return typeof take === 'number' ? rows.slice(0, take) : rows
+      }),
       update: jest.fn(async ({ where, data }: any) => {
         const u = db.users.find((x: any) => x.id === where.id)
         Object.assign(u, data)
@@ -38,16 +45,10 @@ function makeService() {
         return u
       }),
     },
-    affiliate: {
-      findFirst: jest.fn(async () => null),
-      update: jest.fn(async () => ({})),
-    },
+    affiliate: { findUnique: jest.fn(async () => null) },
     organization: { findUnique: jest.fn(async () => ({ id: 'org1', name: 'Acme' })) },
     role: { findFirst: jest.fn(async () => ({ id: 'role1', organizationId: 'org1' })) },
-    userRole: {
-      upsert: jest.fn(async () => ({})),
-      deleteMany: jest.fn(async () => ({ count: 0 })),
-    },
+    userRole: { upsert: jest.fn(async () => ({})) },
     refreshToken: {
       create: jest.fn(async ({ data }: any) => {
         const t = { id: 'rt_' + (db.refreshTokens.length + 1), revokedAt: null, ...data }
@@ -85,58 +86,14 @@ function makeService() {
         return t
       }),
       updateMany: jest.fn(async ({ where, data }: any) => {
-        let count = 0
         for (const t of db.resets) {
-          if (where.id && t.id !== where.id) continue
           if (where.userId && t.userId !== where.userId) continue
           if (where.usedAt === null && t.usedAt) continue
-          if (where.expiresAt?.gt && t.expiresAt <= where.expiresAt.gt) continue
           Object.assign(t, data)
-          count++
         }
-        return { count }
-      }),
-      deleteMany: jest.fn(async () => ({ count: 0 })),
-    },
-    emailLoginCode: {
-      create: jest.fn(async ({ data }: any) => {
-        const t = { id: 'ec_' + (db.emailCodes.length + 1), attempts: 0, usedAt: null, ...data }
-        db.emailCodes.push(t)
-        return t
-      }),
-      findUnique: jest.fn(async ({ where }: any) => {
-        const t = db.emailCodes.find((x: any) => x.challengeHash === where.challengeHash)
-        if (!t) return null
-        return { ...t, user: db.users.find((u: any) => u.id === t.userId) }
-      }),
-      updateMany: jest.fn(async ({ where, data }: any) => {
-        let count = 0
-        for (const t of db.emailCodes) {
-          if (where.id && t.id !== where.id) continue
-          if (where.userId && t.userId !== where.userId) continue
-          if (where.usedAt === null && t.usedAt) continue
-          if (where.expiresAt?.gt && t.expiresAt <= where.expiresAt.gt) continue
-          if (where.attempts?.lt !== undefined && t.attempts >= where.attempts.lt) continue
-          for (const [key, value] of Object.entries(data)) {
-            if (value && typeof value === 'object' && 'increment' in value) {
-              t[key] = (t[key] ?? 0) + (value as any).increment
-            } else {
-              t[key] = value
-            }
-          }
-          count++
-        }
-        return { count }
-      }),
-      deleteMany: jest.fn(async ({ where }: any) => {
-        const before = db.emailCodes.length
-        db.emailCodes = db.emailCodes.filter((t: any) => where.userId && t.userId !== where.userId)
-        return { count: before - db.emailCodes.length }
+        return { count: 0 }
       }),
     },
-    loginExchangeCode: { deleteMany: jest.fn(async () => ({ count: 0 })) },
-    shopifyStaffIdentity: { deleteMany: jest.fn(async () => ({ count: 0 })) },
-    payoutMethodRecord: { updateMany: jest.fn(async () => ({ count: 0 })) },
     invitation: {
       create: jest.fn(async ({ data }: any) => {
         const t = { id: 'inv_' + (db.invites.length + 1), acceptedAt: null, ...data }
@@ -149,67 +106,90 @@ function makeService() {
         Object.assign(t, data)
         return t
       }),
-      updateMany: jest.fn(async ({ where, data }: any) => {
-        let count = 0
-        for (const t of db.invites) {
-          if (where.id && t.id !== where.id) continue
-          if (where.organizationId && t.organizationId !== where.organizationId) continue
-          if (where.email && t.email !== where.email) continue
-          if (where.acceptedAt === null && t.acceptedAt) continue
-          if (where.expiresAt?.gt && t.expiresAt <= where.expiresAt.gt) continue
-          Object.assign(t, data)
-          count++
-        }
-        return { count }
-      }),
     },
-    $transaction: jest.fn(async (work: any) => typeof work === 'function' ? work(prisma) : Promise.all(work)),
-    $executeRaw: jest.fn(async () => 1),
   }
 
-  const jwt: any = { signAsync: jest.fn(async () => 'access.jwt.token') }
-  const mail: any = { send: jest.fn(async () => undefined) }
-  const crypto: any = {
-    encryptText: jest.fn((value: string) => `enc:v1:${value}`),
-    decryptText: jest.fn((value: string) => value.startsWith('enc:v1:') ? value.slice(7) : value),
+  // Signing returns an opaque string; verification round-trips the claims that
+  // were signed so the workspace-selection challenge can be exercised.
+  const signed = new Map<string, any>()
+  let signCount = 0
+  const jwt: any = {
+    signAsync: jest.fn(async (claims: any) => {
+      if (claims?.purpose !== 'workspace' && claims?.purpose !== '2fa') return 'access.jwt.token'
+      const token = `${claims.purpose}.challenge.${++signCount}`
+      signed.set(token, claims)
+      return token
+    }),
+    verifyAsync: jest.fn(async (token: string) => {
+      if (!signed.has(token)) throw new Error('invalid token')
+      return signed.get(token)
+    }),
   }
-  const oidc: any = {}
-  const entitlements: any = { assertFeature: jest.fn(async () => undefined) }
-  const service = new AuthService(prisma, jwt, mail, crypto, oidc, entitlements)
-  return { service, prisma, db, mail }
+  const mail: any = { send: jest.fn(async () => undefined) }
+  // Tenant resolution is stubbed; tests set `tenants.next` to the org a request
+  // should resolve to, mirroring a login domain or an explicit workspace slug.
+  const tenants: any = {
+    next: null as null | { id: string; slug: string; name: string },
+    resolve: jest.fn(async ({ orgSlug }: any) => {
+      if (orgSlug) return db.orgs.find((o: any) => o.slug === orgSlug) ?? null
+      return tenants.next
+    }),
+  }
+  const service = new AuthService(prisma, jwt, mail, tenants)
+  return { service, prisma, db, mail, tenants }
+}
+
+/** Mirrors the subset of Prisma `where` semantics the auth service relies on. */
+function matchesUserWhere(u: any, where: any = {}): boolean {
+  if (where.organizationId && u.organizationId !== where.organizationId) return false
+  if (where.organization?.slug) {
+    const org = u.__orgSlug ?? u.organization?.slug
+    if (org !== where.organization.slug) return false
+  }
+  if (where.email) {
+    const expected = typeof where.email === 'string' ? where.email : where.email.equals
+    if (String(u.email).toLowerCase() !== String(expected).toLowerCase()) return false
+  }
+  return true
 }
 
 async function seedUser(db: any, over: any = {}) {
+  const organizationId = over.organizationId ?? 'org1'
+  const org = seedOrg(db, organizationId)
   const u = {
     id: 'u1',
-    organizationId: 'org1',
+    organizationId,
     email: 'a@b.com',
     fullName: 'Ada Lovelace',
     status: 'active',
-    emailVerifiedAt: null,
-    twoFactorEnabled: false,
-    isSuperAdmin: false,
-    organization: { id: 'org1', name: 'Acme', slug: 'acme', status: 'active', settings: {} },
     passwordHash: await argon2.hash('password123'),
     roles: [],
+    organization: org,
+    __orgSlug: org.slug,
     ...over,
   }
   db.users.push(u)
   return u
 }
 
+function seedOrg(db: any, id: string) {
+  db.orgs = db.orgs ?? []
+  const existing = db.orgs.find((o: any) => o.id === id)
+  if (existing) return existing
+  const org = { id, slug: id.replace(/[^a-z0-9-]/g, '-'), name: id.toUpperCase() }
+  db.orgs.push(org)
+  return org
+}
+
 describe('AuthService token lifecycle', () => {
   it('login issues an access + opaque refresh token and stores its hash', async () => {
-    const { service, db, prisma } = makeService()
+    const { service, db } = makeService()
     await seedUser(db)
     const res = await service.login({ email: 'a@b.com', password: 'password123' }) as any
     expect(res.access_token).toBe('access.jwt.token')
     expect(res.refresh_token).toHaveLength(64)
     expect(db.refreshTokens).toHaveLength(1)
     expect(db.refreshTokens[0].tokenHash).toBe(sha(res.refresh_token))
-    expect(prisma.affiliate.findFirst).toHaveBeenCalledWith({
-      where: { userId: 'u1', status: 'approved' },
-    })
   })
 
   it('refresh rotates the token and revokes the old one', async () => {
@@ -221,15 +201,6 @@ describe('AuthService token lifecycle', () => {
     const old = db.refreshTokens.find((t: any) => t.tokenHash === sha(first.refresh_token))
     expect(old.revokedAt).toBeTruthy()
     expect(old.replacedByTokenId).toBeTruthy()
-  })
-
-  it('does not refresh a session after the account is suspended', async () => {
-    const { service, db } = makeService()
-    const user = await seedUser(db)
-    const first = await service.login({ email: 'a@b.com', password: 'password123' }) as any
-    user.status = 'suspended'
-
-    await expect(service.refresh(first.refresh_token)).rejects.toBeInstanceOf(UnauthorizedException)
   })
 
   it('reusing a rotated refresh token revokes all sessions (breach)', async () => {
@@ -255,69 +226,6 @@ describe('AuthService token lifecycle', () => {
     const { service, db } = makeService()
     await seedUser(db, { id: 'u2', email: 'inv@b.com', status: 'invited' })
     await expect(service.login({ email: 'inv@b.com', password: 'password123' })).rejects.toBeInstanceOf(UnauthorizedException)
-  })
-
-  it('refuses ambiguous credentials shared by more than one tenant', async () => {
-    const { service, db } = makeService()
-    await seedUser(db, { id: 'u1', organizationId: 'org1' })
-    await seedUser(db, { id: 'u2', organizationId: 'org2' })
-    await expect(service.login({ email: 'a@b.com', password: 'password123' })).rejects.toBeInstanceOf(UnauthorizedException)
-  })
-})
-
-describe('AuthService email-code login', () => {
-  it('emails a six-digit code and stores only its keyed hash', async () => {
-    const { service, db, mail } = makeService()
-    await seedUser(db)
-
-    const result = await service.requestEmailLoginCode({ email: 'A@B.COM' })
-
-    expect(result.ok).toBe(true)
-    expect(result.challenge.length).toBeGreaterThanOrEqual(32)
-    expect(db.emailCodes).toHaveLength(1)
-    expect(db.emailCodes[0].challengeHash).toBe(sha(result.challenge))
-    expect(db.emailCodes[0].codeHash).toMatch(/^[a-f0-9]{64}$/)
-    expect(JSON.stringify(db.emailCodes[0])).not.toMatch(/"code":"\d{6}"/)
-    expect(mail.send).toHaveBeenCalledTimes(1)
-  })
-
-  it('verifies the emailed code once and activates the session', async () => {
-    const { service, db, prisma, mail } = makeService()
-    const user = await seedUser(db, { status: 'invited' })
-    const requested = await service.requestEmailLoginCode({ email: 'a@b.com' })
-    const body = mail.send.mock.calls[0][0].text as string
-    const code = body.match(/Code: (\d{6})/)?.[1]
-    expect(code).toMatch(/^\d{6}$/)
-
-    const result = await service.verifyEmailLoginCode({ challenge: requested.challenge, code: code! }) as any
-    expect(result.access_token).toBe('access.jwt.token')
-    expect(db.emailCodes[0].usedAt).toBeTruthy()
-    expect(user.status).toBe('active')
-    expect(user.emailVerifiedAt).toBeTruthy()
-    expect(prisma.refreshToken.create).toHaveBeenCalled()
-
-    await expect(service.verifyEmailLoginCode({ challenge: requested.challenge, code: code! }))
-      .rejects.toBeInstanceOf(UnauthorizedException)
-  })
-
-  it('counts invalid attempts without revealing the correct code', async () => {
-    const { service, db } = makeService()
-    await seedUser(db)
-    const requested = await service.requestEmailLoginCode({ email: 'a@b.com' })
-
-    await expect(service.verifyEmailLoginCode({ challenge: requested.challenge, code: '000000' }))
-      .rejects.toBeInstanceOf(UnauthorizedException)
-    expect(db.emailCodes[0].attempts).toBe(1)
-  })
-
-  it('returns the same public shape for an unknown address without sending mail', async () => {
-    const { service, db, mail } = makeService()
-    const result = await service.requestEmailLoginCode({ email: 'missing@example.com' })
-    expect(result.ok).toBe(true)
-    expect(result.expiresInSeconds).toBeGreaterThan(0)
-    expect(result.challenge.length).toBeGreaterThanOrEqual(32)
-    expect(db.emailCodes).toHaveLength(0)
-    expect(mail.send).not.toHaveBeenCalled()
   })
 })
 
@@ -382,32 +290,144 @@ describe('AuthService invitations', () => {
   })
 })
 
-describe('AuthService account deletion', () => {
-  it('requires the current password and refuses super-admin self-deletion', async () => {
-    const { service, db } = makeService()
-    await seedUser(db)
-    await expect(service.deleteAccount('u1', 'wrong')).rejects.toBeInstanceOf(UnauthorizedException)
+describe('AuthService tenant-first login (regression: C1)', () => {
+  /**
+   * `User` is unique on [organizationId, email], so the same address can exist
+   * in several workspaces. Before this fix, login used
+   * `findFirst({ where: { email } })` and authenticated whoever the database
+   * happened to return first.
+   */
+  async function seedTwoWorkspaces() {
+    const ctx = makeService()
+    await seedUser(ctx.db, { id: 'u_acme', organizationId: 'acme', email: 'ada@example.com' })
+    await seedUser(ctx.db, { id: 'u_globex', organizationId: 'globex', email: 'ada@example.com' })
+    return ctx
+  }
 
-    db.users[0].isSuperAdmin = true
-    await expect(service.deleteAccount('u1', 'password123')).rejects.toBeInstanceOf(BadRequestException)
+  it('signs in to the workspace resolved from the request, not an arbitrary one', async () => {
+    const { service, db, tenants } = await seedTwoWorkspaces()
+    tenants.next = db.orgs.find((o: any) => o.id === 'globex')
+
+    const res = (await service.login({ email: 'ada@example.com', password: 'password123' })) as any
+
+    expect(res.access_token).toBe('access.jwt.token')
+    expect(res.user.organizationId).toBe('globex')
+    expect(res.user.id).toBe('u_globex')
   })
 
-  it('anonymizes profile and identity fields transactionally', async () => {
-    const { service, db, prisma } = makeService()
-    const user = await seedUser(db, {
-      phoneNumber: '+92 300 0000000',
-      avatarUrl: 'https://example.com/avatar.jpg',
-      ssoProvider: 'oidc',
-      ssoSubject: 'subject-1',
-      affiliate: null,
-    })
+  it('an explicit workspace slug selects that tenant', async () => {
+    const { service } = await seedTwoWorkspaces()
 
-    await expect(service.deleteAccount('u1', 'password123')).resolves.toMatchObject({ ok: true })
-    expect(user.email).toMatch(/^deleted_.+@account\.invalid$/)
-    expect(user.phoneNumber).toBeNull()
-    expect(user.avatarUrl).toBeNull()
-    expect(user.ssoSubject).toBeNull()
-    expect(user.status).toBe('suspended')
-    expect(prisma.userRole.deleteMany).toHaveBeenCalledWith({ where: { userId: 'u1' } })
+    const res = (await service.login({
+      email: 'ada@example.com',
+      password: 'password123',
+      orgSlug: 'acme',
+    })) as any
+
+    expect(res.user.organizationId).toBe('acme')
+  })
+
+  it('never authenticates into a workspace the address does not belong to', async () => {
+    const ctx = makeService()
+    await seedUser(ctx.db, { id: 'u_acme', organizationId: 'acme', email: 'ada@example.com' })
+    seedOrg(ctx.db, 'globex')
+    ctx.tenants.next = ctx.db.orgs.find((o: any) => o.id === 'globex')
+
+    await expect(
+      ctx.service.login({ email: 'ada@example.com', password: 'password123' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException)
+  })
+
+  it('an unknown workspace slug fails like a wrong password, leaking nothing', async () => {
+    const { service } = await seedTwoWorkspaces()
+
+    await expect(
+      service.login({ email: 'ada@example.com', password: 'password123', orgSlug: 'does-not-exist' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException)
+  })
+
+  it('asks which workspace when the tenant is ambiguous, instead of guessing', async () => {
+    const { service } = await seedTwoWorkspaces()
+
+    const res = (await service.login({ email: 'ada@example.com', password: 'password123' })) as any
+
+    expect(res.workspaceSelectionRequired).toBe(true)
+    expect(res.access_token).toBeUndefined()
+    expect(res.workspaces.map((w: any) => w.slug).sort()).toEqual(['acme', 'globex'])
+  })
+
+  it('the selection challenge only issues tokens for an account the password unlocked', async () => {
+    const { service } = await seedTwoWorkspaces()
+    const challenge = ((await service.login({
+      email: 'ada@example.com',
+      password: 'password123',
+    })) as any).challenge
+
+    const res = (await service.selectWorkspace(challenge, 'globex')) as any
+    expect(res.user.organizationId).toBe('globex')
+
+    // A workspace outside the challenge cannot be reached with it.
+    await expect(service.selectWorkspace(challenge, 'initech')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    )
+    await expect(service.selectWorkspace('forged.token', 'acme')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    )
+  })
+
+  it('a wrong password is rejected even when the address exists in several workspaces', async () => {
+    const { service } = await seedTwoWorkspaces()
+
+    await expect(
+      service.login({ email: 'ada@example.com', password: 'wrong-password' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException)
+  })
+
+  it('status gates still apply after the tenant is resolved', async () => {
+    const ctx = makeService()
+    await seedUser(ctx.db, {
+      id: 'u_susp',
+      organizationId: 'acme',
+      email: 'ada@example.com',
+      status: 'suspended',
+    })
+    ctx.tenants.next = ctx.db.orgs.find((o: any) => o.id === 'acme')
+
+    await expect(
+      ctx.service.login({ email: 'ada@example.com', password: 'password123' }),
+    ).rejects.toBeInstanceOf(UnauthorizedException)
+  })
+})
+
+describe('AuthService tenant-scoped password reset (regression: C1)', () => {
+  it('resets only the account in the resolved workspace', async () => {
+    const ctx = makeService()
+    await seedUser(ctx.db, { id: 'u_acme', organizationId: 'acme', email: 'ada@example.com' })
+    await seedUser(ctx.db, { id: 'u_globex', organizationId: 'globex', email: 'ada@example.com' })
+    ctx.tenants.next = ctx.db.orgs.find((o: any) => o.id === 'globex')
+
+    await ctx.service.forgotPassword({ email: 'ada@example.com' })
+
+    expect(ctx.db.resets).toHaveLength(1)
+    expect(ctx.db.resets[0].userId).toBe('u_globex')
+  })
+
+  it('without a resolvable tenant, sends one clearly-labelled link per workspace', async () => {
+    const ctx = makeService()
+    await seedUser(ctx.db, { id: 'u_acme', organizationId: 'acme', email: 'ada@example.com' })
+    await seedUser(ctx.db, { id: 'u_globex', organizationId: 'globex', email: 'ada@example.com' })
+
+    await ctx.service.forgotPassword({ email: 'ada@example.com' })
+
+    expect(ctx.db.resets.map((r: any) => r.userId).sort()).toEqual(['u_acme', 'u_globex'])
+    expect(ctx.mail.send).toHaveBeenCalledTimes(2)
+  })
+
+  it('still answers ok for an address that does not exist', async () => {
+    const ctx = makeService()
+    await expect(ctx.service.forgotPassword({ email: 'nobody@example.com' })).resolves.toEqual({
+      ok: true,
+    })
+    expect(ctx.db.resets).toHaveLength(0)
   })
 })

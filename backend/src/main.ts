@@ -1,4 +1,3 @@
-import 'dotenv/config'
 import { NestFactory } from '@nestjs/core'
 import { ValidationPipe, Logger } from '@nestjs/common'
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger'
@@ -11,32 +10,16 @@ async function bootstrap() {
   // ── Production startup guard ─────────────────────────────────────────────
   // Refuse to boot in production with missing or obviously-insecure secrets.
   // This turns a "silently broken" deploy into a loud, unmissable failure.
-  const production = process.env.NODE_ENV === 'production'
-  const REQUIRED_ENV = ['DATABASE_URL', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'ENCRYPTION_KEY', 'CORS_ORIGIN']
+  const REQUIRED_ENV = ['DATABASE_URL', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'ENCRYPTION_KEY']
   const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k])
-  if (missingEnv.length > 0 && production) {
+  if (missingEnv.length > 0 && process.env.NODE_ENV === 'production') {
     console.error(`FATAL: missing required env vars: ${missingEnv.join(', ')}`)
     console.error('Set these in your .env or deployment secrets before starting the server.')
     process.exit(1)
   }
-  if (production) {
-    const secretNames = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'ENCRYPTION_KEY'] as const
-    const values = secretNames.map((name) => ({ name, value: process.env[name]?.trim() ?? '' }))
-    const unsafe = values.filter(({ value }) =>
-      value.length < 32 || /change-me|replace_with|example|password/i.test(value),
-    )
-    if (unsafe.length > 0) {
-      console.error(`FATAL: insecure or placeholder secrets: ${unsafe.map((item) => item.name).join(', ')}`)
-      process.exit(1)
-    }
-    if (new Set(values.map((item) => item.value)).size !== values.length) {
-      console.error('FATAL: JWT and encryption secrets must all be different.')
-      process.exit(1)
-    }
-    if (process.env.CORS_ORIGIN?.split(',').some((origin) => origin.trim() === '*')) {
-      console.error('FATAL: wildcard CORS is not permitted in production.')
-      process.exit(1)
-    }
+  if (process.env.JWT_ACCESS_SECRET === 'change-me-to-a-long-random-secret' && process.env.NODE_ENV === 'production') {
+    console.error('FATAL: JWT_ACCESS_SECRET is still set to the example placeholder.')
+    process.exit(1)
   }
 
   // ── Sentry ───────────────────────────────────────────────────────────────
@@ -49,14 +32,11 @@ async function bootstrap() {
   // Consistent JSON error envelope + Sentry reporting for 5xx.
   app.useGlobalFilters(new AllExceptionsFilter())
 
-  // Trust only explicitly approved proxy networks. A numeric "1" would let a
-  // client that reaches the API directly spoof x-forwarded-for and evade the
-  // per-IP login/rate limits. Cloudflared on this Windows test host is loopback;
-  // Docker/nginx deployments can opt into linklocal/uniquelocal via TRUST_PROXY.
+  // Trust the first proxy hop (nginx / load balancer) so req.ip reflects the real
+  // client address — required for accurate per-IP rate limiting behind a proxy.
   const httpAdapter = app.getHttpAdapter()
   const instance: any = httpAdapter.getInstance?.()
-  const trustedProxy = process.env.TRUST_PROXY?.trim() || (process.env.NODE_ENV === 'production' ? 'loopback' : '')
-  if (instance?.set && trustedProxy) instance.set('trust proxy', trustedProxy)
+  if (instance?.set) instance.set('trust proxy', 1)
 
   // Security headers (CSP disabled here since the API is JSON-only and served
   // separately from the web app; enable/customize if you serve HTML).
@@ -78,31 +58,7 @@ async function bootstrap() {
     origin: corsOrigin === '*' ? true : corsOrigin.split(',').map((o) => o.trim()),
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'x-auth-mode'],
-  })
-
-  // HttpOnly session cookies are protected against cross-site form/subdomain
-  // attacks as well as ordinary CORS abuse. Machine webhooks and API-key or
-  // bearer clients do not carry these cookies and are unaffected.
-  const allowedMutationOrigins = new Set(
-    [
-      ...corsOrigin.split(','),
-      process.env.APP_URL || '',
-    ]
-      .map((origin) => origin.trim().replace(/\/$/, ''))
-      .filter((origin) => origin && origin !== '*'),
-  )
-  app.use((req: any, res: any, next: () => void) => {
-    if (['GET', 'HEAD', 'OPTIONS'].includes(String(req.method).toUpperCase())) return next()
-    const cookie = typeof req.headers?.cookie === 'string' ? req.headers.cookie : ''
-    const hasSessionCookie = /(?:^|;\s*)affiliate_(?:access|refresh)=/.test(cookie)
-    if (!hasSessionCookie) return next()
-    const origin = typeof req.headers?.origin === 'string' ? req.headers.origin.replace(/\/$/, '') : ''
-    if (!origin || !allowedMutationOrigins.has(origin)) {
-      res.status(403).json({ statusCode: 403, message: 'Untrusted request origin' })
-      return
-    }
-    next()
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
   })
 
   app.useGlobalPipes(
@@ -143,9 +99,8 @@ async function bootstrap() {
   }
 
   const port = Number(process.env.API_PORT) || 4000
-  const host = process.env.API_HOST || (production ? '127.0.0.1' : '0.0.0.0')
-  await app.listen(port, host)
-  Logger.log(`API running on http://${host}:${port}/${prefix}`, 'Bootstrap')
+  await app.listen(port)
+  Logger.log(`API running on http://localhost:${port}/${prefix}`, 'Bootstrap')
   Logger.log(`Error tracking (Sentry): ${sentryOn ? 'enabled' : 'disabled'}`, 'Bootstrap')
 }
 bootstrap()

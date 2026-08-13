@@ -1,4 +1,4 @@
-import { ArrayMaxSize, IsArray, IsBoolean, IsObject, IsOptional } from 'class-validator'
+import { IsArray, IsBoolean, IsOptional } from 'class-validator'
 
 /**
  * Bulk catalog sync payload.
@@ -11,8 +11,6 @@ import { ArrayMaxSize, IsArray, IsBoolean, IsObject, IsOptional } from 'class-va
  */
 export class SyncCatalogDto {
   @IsArray()
-  @ArrayMaxSize(1_000)
-  @IsObject({ each: true })
   products!: Array<Record<string, unknown>>
 
   @IsOptional()

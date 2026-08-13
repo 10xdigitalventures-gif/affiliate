@@ -1,9 +1,15 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common'
 import { PassportStrategy } from '@nestjs/passport'
 import { ExtractJwt, Strategy } from 'passport-jwt'
-import { PrismaService } from '../prisma/prisma.service'
-import { ConfigService } from '@nestjs/config'
+import { AuthIdentity, IdentityService } from './identity.service'
 
+/**
+ * The claims we put into an access token.
+ *
+ * Only `sub` is trusted on the way back in. The rest are carried for debugging
+ * and for clients that want to avoid an extra round trip - they are NOT used
+ * for authorization. See `validate()`.
+ */
 export interface JwtPayload {
   sub: string
   organizationId: string
@@ -12,74 +18,42 @@ export interface JwtPayload {
   isSuperAdmin?: boolean
 }
 
-function cookieExtractor(req: { headers?: { cookie?: string } } | undefined): string | null {
-  const raw = req?.headers?.cookie
-  if (!raw) return null
-  for (const item of raw.split(';')) {
-    const [key, ...value] = item.trim().split('=')
-    if (key === 'affiliate_access') return decodeURIComponent(value.join('='))
-  }
-  return null
-}
-
-const extractAuthorizationBearer = ExtractJwt.fromAuthHeaderAsBearerToken()
-function bearerExtractor(req: any): string | null {
-  // API-key authentication is the production machine-to-machine mechanism.
-  // When bearer mode is disabled, do not merely hide tokens from login
-  // responses: reject Authorization bearer credentials at the extractor too.
-  const enabled = process.env.NODE_ENV !== 'production' || process.env.ALLOW_BEARER_AUTH === 'true'
-  return enabled ? extractAuthorizationBearer(req) : null
-}
+/** What actually lands on `req.user`. Recomputed from the database. */
+export type RequestUser = AuthIdentity
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private readonly prisma: PrismaService, config: ConfigService) {
+  constructor(private readonly identity: IdentityService) {
     super({
-      jwtFromRequest: ExtractJwt.fromExtractors([cookieExtractor, bearerExtractor]),
+      jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      // Production is rejected earlier if the secret is missing. This explicit
-      // development value keeps module-level tests and local scaffolding clear.
-      secretOrKey: config.get<string>('JWT_ACCESS_SECRET') || 'development-only-missing-secret',
+      // No fallback — startup guard in main.ts ensures this is always a real secret.
+      secretOrKey: process.env.JWT_ACCESS_SECRET!,
     })
   }
 
-  async validate(payload: JwtPayload) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-      select: {
-        status: true,
-        organizationId: true,
-        isSuperAdmin: true,
-        organization: { select: { status: true } },
-        affiliate: { select: { id: true, status: true } },
-        roles: {
-          select: {
-            role: {
-              select: {
-                permissions: { select: { permission: { select: { key: true } } } },
-              },
-            },
-          },
-        },
-      },
-    })
-    if (!user || user.status !== 'active' || user.organizationId !== payload.organizationId) {
-      throw new UnauthorizedException('Session is no longer valid')
+  /**
+   * Previously this returned the decoded payload as-is, which meant every
+   * authorization decision in the app trusted a snapshot taken at login time.
+   * A suspended user, a revoked role, or a suspended organization stayed fully
+   * effective until the token expired.
+   *
+   * Now the token supplies only the subject id and the identity is rebuilt from
+   * the database on each request (behind a short TTL cache).
+   */
+  async validate(payload: JwtPayload): Promise<RequestUser> {
+    if (!payload?.sub) throw new UnauthorizedException('Invalid token')
+
+    const identity = await this.identity.resolve(payload.sub)
+    if (!identity) throw new UnauthorizedException('Account is no longer active')
+
+    // A token whose organization no longer matches the user's record is either
+    // stale or forged. Refuse it rather than silently switching tenants —
+    // req.user.organizationId is what the Prisma tenant scoping keys off.
+    if (payload.organizationId && payload.organizationId !== identity.organizationId) {
+      throw new UnauthorizedException('Token does not match the account organization')
     }
-    if (user.organization.status === 'suspended' && !user.isSuperAdmin) {
-      throw new UnauthorizedException('Workspace suspended')
-    }
-    const permissions = [
-      ...new Set(user.roles.flatMap((item) => item.role.permissions.map((entry) => entry.permission.key))),
-    ]
-    // Reload the affiliate relationship on every request as well. A signed JWT
-    // may outlive an affiliate suspension/re-link and must never retain stale
-    // portal access.
-    return {
-      ...payload,
-      permissions,
-      affiliateId: user.affiliate?.status === 'approved' ? user.affiliate.id : null,
-      isSuperAdmin: user.isSuperAdmin,
-    }
+
+    return identity
   }
 }

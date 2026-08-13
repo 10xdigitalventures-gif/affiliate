@@ -1,5 +1,4 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common'
-jest.mock('../auth/auth.service', () => ({ AuthService: class AuthService {} }))
 import { ApplicationsService } from './applications.service'
 
 function makeService() {
@@ -10,20 +9,16 @@ function makeService() {
       create: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-      findUnique: jest.fn(),
     },
-    affiliate: { create: jest.fn(), delete: jest.fn() },
+    affiliate: { create: jest.fn() },
   }
   const mail: any = {
     send: jest.fn(async () => undefined),
     appUrl: 'http://localhost:3000',
   }
   const notifications: any = { notifyUser: jest.fn(async () => null), notifyOrgAdmins: jest.fn(async () => 0) }
-  const auth: any = { provisionAffiliateAccess: jest.fn(async () => ({ ok: true, userId: 'user-1', invitationSent: true })) }
-  const entitlements: any = { assertWithinLimit: jest.fn(async () => undefined) }
-  const service = new ApplicationsService(prisma, mail, notifications, auth, entitlements)
-  return { service, prisma, mail, auth, entitlements }
+  const service = new ApplicationsService(prisma, mail, notifications)
+  return { service, prisma, mail }
 }
 
 describe('ApplicationsService.apply', () => {
@@ -74,7 +69,7 @@ describe('ApplicationsService.apply', () => {
   })
 
   it('auto-approves when org setting enabled', async () => {
-    const { service, prisma, mail, auth } = makeService()
+    const { service, prisma, mail } = makeService()
     prisma.organization.findUnique.mockResolvedValue({
       id: 'org-1',
       name: 'Demo',
@@ -98,17 +93,13 @@ describe('ApplicationsService.apply', () => {
     const res = await service.apply('demo', dto as any)
     expect(res.autoApproved).toBe(true)
     expect((res as any).affiliate.affiliateCode).toBe('ABC123')
-    expect(auth.provisionAffiliateAccess).toHaveBeenCalledWith(expect.objectContaining({
-      affiliateId: 'aff-1',
-      email: dto.email,
-    }))
     expect(mail.send).toHaveBeenCalled()
   })
 })
 
 describe('ApplicationsService.approve / reject', () => {
   it('approve creates affiliate and marks approved', async () => {
-    const { service, prisma, mail, auth } = makeService()
+    const { service, prisma, mail } = makeService()
     prisma.affiliateApplication.findFirst.mockResolvedValue({
       id: 'app-1',
       organizationId: 'org-1',
@@ -120,11 +111,9 @@ describe('ApplicationsService.approve / reject', () => {
     prisma.affiliate.create.mockResolvedValue({ id: 'aff-1', affiliateCode: 'ZZ9' })
     prisma.affiliateApplication.update.mockResolvedValue({ status: 'approved' })
 
-    const res = await service.approve('org-1', 'app-1', 'admin-1')
+    const res = await service.approve('org-1', 'app-1')
     expect(res.affiliate.affiliateCode).toBe('ZZ9')
-    expect(auth.provisionAffiliateAccess).toHaveBeenCalledWith(expect.objectContaining({
-      invitedByUserId: 'admin-1',
-    }))
+    expect(mail.send).toHaveBeenCalled()
   })
 
   it('cannot approve non-pending application', async () => {
@@ -147,30 +136,11 @@ describe('ApplicationsService.approve / reject', () => {
       payload: { firstName: 'Ada' },
     })
     prisma.organization.findUnique.mockResolvedValue({ name: 'Demo' })
-    prisma.affiliateApplication.findUnique.mockResolvedValue({ id: 'app-1', status: 'rejected' })
+    prisma.affiliateApplication.update.mockResolvedValue({ id: 'app-1', status: 'rejected' })
 
     const res = await service.reject('org-1', 'app-1')
-    expect(res).toMatchObject({ status: 'rejected' })
+    expect(res.status).toBe('rejected')
     expect(mail.send).toHaveBeenCalled()
-  })
-
-  it('releases the approval claim when portal provisioning fails', async () => {
-    const { service, prisma, auth } = makeService()
-    prisma.affiliateApplication.findFirst.mockResolvedValue({
-      id: 'app-1',
-      organizationId: 'org-1',
-      email: 'a@b.com',
-      status: 'pending',
-      payload: { firstName: 'Ada' },
-    })
-    prisma.affiliate.create.mockResolvedValue({ id: 'aff-1', affiliateCode: 'ZZ9' })
-    prisma.affiliate.delete.mockResolvedValue({ id: 'aff-1' })
-    auth.provisionAffiliateAccess.mockRejectedValue(new Error('provision failed'))
-
-    await expect(service.approve('org-1', 'app-1')).rejects.toThrow('provision failed')
-    expect(prisma.affiliateApplication.updateMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({ data: { status: 'pending', reviewedBy: null } }),
-    )
   })
 
   it('throws NotFound when application missing', async () => {

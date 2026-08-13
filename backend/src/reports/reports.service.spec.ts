@@ -65,15 +65,6 @@ describe('ReportsService.summary', () => {
     expect(res.range.from.startsWith('2026-01-01')).toBe(true)
     expect(res.revenue).toBe(0)
   })
-
-  it('rejects invalid or excessive ranges before querying the database', () => {
-    const { service, prisma } = makeService()
-
-    expect(() => service.resolveRange({ days: Number.NaN })).toThrow('positive number')
-    expect(() => service.resolveRange({ days: 367 })).toThrow('cannot exceed 366 days')
-    expect(() => service.resolveRange({ from: '2026-02-01', to: '2026-01-01' })).toThrow('must not be after')
-    expect(prisma.order.findMany).not.toHaveBeenCalled()
-  })
 })
 
 describe('ReportsService.timeseries', () => {

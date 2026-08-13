@@ -12,14 +12,14 @@ describe('PayoutProviderService', () => {
     new ManualPayoutProvider(),
   )
 
-  it('routes configured provider names to their providers', () => {
+  it('routes stripe/wise to their providers', () => {
     expect(svc.forMethod('stripe').method).toBe('stripe')
     expect(svc.forMethod('wise').method).toBe('wise')
-    expect(svc.forMethod('paypal').method).toBe('paypal')
   })
 
   it('routes non-automated rails to manual', () => {
     expect(svc.forMethod('bank').method).toBe('manual')
+    expect(svc.forMethod('paypal').method).toBe('manual')
     expect(svc.forMethod('crypto').method).toBe('manual')
     expect(svc.forMethod('manual').method).toBe('manual')
     expect(svc.forMethod('unknown').method).toBe('manual')

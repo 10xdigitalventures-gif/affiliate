@@ -42,7 +42,6 @@ export default function SettingsPage() {
   const [signupEnabled, setSignupEnabled] = useState(true)
   const [autoApprove, setAutoApprove] = useState(false)
   const [requireWebsite, setRequireWebsite] = useState(false)
-  const [allowAffiliateLinkCreation, setAllowAffiliateLinkCreation] = useState(true)
   const [settingsBusy, setSettingsBusy] = useState(false)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
@@ -86,7 +85,6 @@ export default function SettingsPage() {
       setSignupEnabled(s.signupEnabled)
       setAutoApprove(s.autoApprove)
       setRequireWebsite(s.requireWebsite ?? false)
-      setAllowAffiliateLinkCreation(s.allowAffiliateLinkCreation ?? true)
       if (s.slug) setOrgSlug(s.slug)
       if (s.branding) {
         setBrandHeadline(s.branding.headline ?? '')
@@ -117,7 +115,6 @@ export default function SettingsPage() {
         signupEnabled,
         autoApprove,
         requireWebsite,
-        allowAffiliateLinkCreation,
         headline: brandHeadline,
         subheadline: brandSub,
         imageUrl: brandImage,
@@ -363,11 +360,12 @@ export default function SettingsPage() {
   const [ssoClientId, setSsoClientId] = useState('')
   const [ssoClientSecret, setSsoClientSecret] = useState('')
   const [ssoHasSecret, setSsoHasSecret] = useState(false)
-  const [ssoIssuerUrl, setSsoIssuerUrl] = useState('')
+  const [ssoAuthUrl, setSsoAuthUrl] = useState('')
+  const [ssoTokenUrl, setSsoTokenUrl] = useState('')
+  const [ssoUserinfoUrl, setSsoUserinfoUrl] = useState('')
   const [ssoScopes, setSsoScopes] = useState('openid email profile')
   const [ssoDomains, setSsoDomains] = useState('')
   const [ssoAutoProvision, setSsoAutoProvision] = useState(false)
-  const [ssoDefaultRoleId, setSsoDefaultRoleId] = useState('')
   const [ssoCallbackUrl, setSsoCallbackUrl] = useState('')
   const [ssoBusy, setSsoBusy] = useState(false)
   const [ssoLoaded, setSsoLoaded] = useState(false)
@@ -379,11 +377,12 @@ export default function SettingsPage() {
       setSsoProvider(s.provider)
       setSsoClientId(s.clientId)
       setSsoHasSecret(s.hasClientSecret)
-      setSsoIssuerUrl(s.issuerUrl)
+      setSsoAuthUrl(s.authorizationUrl)
+      setSsoTokenUrl(s.tokenUrl)
+      setSsoUserinfoUrl(s.userinfoUrl)
       setSsoScopes(s.scopes)
       setSsoDomains((s.allowedDomains ?? []).join('\n'))
       setSsoAutoProvision(s.autoProvision)
-      setSsoDefaultRoleId(s.defaultRoleId || '')
       setSsoCallbackUrl(s.callbackUrl)
       setSsoLoaded(true)
     }).catch(() => setSsoLoaded(true))
@@ -397,11 +396,12 @@ export default function SettingsPage() {
         provider: ssoProvider,
         clientId: ssoClientId,
         ...(ssoClientSecret ? { clientSecret: ssoClientSecret } : {}),
-        issuerUrl: ssoIssuerUrl,
+        authorizationUrl: ssoAuthUrl,
+        tokenUrl: ssoTokenUrl,
+        userinfoUrl: ssoUserinfoUrl,
         scopes: ssoScopes,
         allowedDomains: ssoDomains.split(/[\n,]/).map((x) => x.trim().toLowerCase()).filter(Boolean),
         autoProvision: ssoAutoProvision,
-        defaultRoleId: ssoDefaultRoleId || undefined,
       })
       setSsoHasSecret(res.hasClientSecret)
       setSsoClientSecret('')
@@ -515,7 +515,6 @@ export default function SettingsPage() {
             <Toggle checked={signupEnabled} onChange={setSignupEnabled} label="Allow affiliate signups" hint="When off, the public signup page shows a closed message" />
             <Toggle checked={autoApprove} onChange={setAutoApprove} label="Auto-approve applications" hint="Instantly create an affiliate account on signup (no manual review)" />
             <Toggle checked={requireWebsite} onChange={setRequireWebsite} label="Require website / social profile" hint="Applicants must provide a website or social link" />
-            <Toggle checked={allowAffiliateLinkCreation} onChange={setAllowAffiliateLinkCreation} label="Allow affiliates to create tracking links" hint="Links are limited to connected store domains and always belong to the signed-in affiliate" />
 
             {/* Branding / customization of the public sign-up form */}
             <div className="mt-4 pt-3 border-t border-line">
@@ -902,9 +901,18 @@ export default function SettingsPage() {
                 </div>
               </div>
               <div>
-                <label className="text-2xs text-muted">OIDC issuer URL</label>
-                <input type="url" value={ssoIssuerUrl} onChange={(e) => setSsoIssuerUrl(e.target.value)} placeholder="https://idp.example.com" className="mt-0.5 w-full rounded-md border border-line px-2 py-1.5 text-sm" />
-                <p className="mt-1 text-2xs text-muted">Authorization, token, userinfo and signing-key endpoints are securely discovered from this issuer.</p>
+                <label className="text-2xs text-muted">Authorization URL</label>
+                <input value={ssoAuthUrl} onChange={(e) => setSsoAuthUrl(e.target.value)} className="mt-0.5 w-full rounded-md border border-line px-2 py-1.5 text-sm" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-2xs text-muted">Token URL</label>
+                  <input value={ssoTokenUrl} onChange={(e) => setSsoTokenUrl(e.target.value)} className="mt-0.5 w-full rounded-md border border-line px-2 py-1.5 text-sm" />
+                </div>
+                <div>
+                  <label className="text-2xs text-muted">Userinfo URL</label>
+                  <input value={ssoUserinfoUrl} onChange={(e) => setSsoUserinfoUrl(e.target.value)} className="mt-0.5 w-full rounded-md border border-line px-2 py-1.5 text-sm" />
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -918,12 +926,6 @@ export default function SettingsPage() {
               </div>
               <Toggle checked={ssoAutoProvision} onChange={setSsoAutoProvision} label="Auto-provision new users"
                 hint="Create an account automatically on first SSO login when the email domain is allowed." />
-              {ssoAutoProvision && (
-                <div>
-                  <label className="text-2xs text-muted">Default role ID for provisioned users</label>
-                  <input value={ssoDefaultRoleId} onChange={(e) => setSsoDefaultRoleId(e.target.value)} className="mt-0.5 w-full rounded-md border border-line px-2 py-1.5 text-sm" />
-                </div>
-              )}
             </div>
             <div className="mt-3 pt-2 border-t border-line flex items-center gap-3">
               <Button disabled={ssoBusy} onClick={saveSsoSettings}>{ssoBusy ? 'Saving...' : 'Save settings'}</Button>

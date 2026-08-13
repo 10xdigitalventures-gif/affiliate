@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsUUID, Max, Min } from 'class-validator'
+import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, Min } from 'class-validator'
 
 export const RULE_SCOPES = ['global', 'store', 'category', 'product', 'campaign', 'affiliate'] as const
 export const COMMISSION_TYPES = ['percentage', 'fixed', 'tiered', 'recurring'] as const
@@ -9,7 +9,7 @@ export class CreateCommissionRuleDto {
 
   /** Required for every scope except `global`. e.g. productId / categoryId / storeId / affiliateId. */
   @IsOptional()
-  @IsUUID()
+  @IsString()
   scopeRefId?: string
 
   @IsIn(COMMISSION_TYPES as unknown as string[])
@@ -17,7 +17,6 @@ export class CreateCommissionRuleDto {
 
   @IsNumber()
   @Min(0)
-  @Max(1_000_000_000)
   value!: number
 
   @IsOptional()

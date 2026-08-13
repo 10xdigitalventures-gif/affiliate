@@ -6,14 +6,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
-import { Prisma } from '@prisma/client'
-import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import * as argon2 from 'argon2'
 import { PrismaService } from '../prisma/prisma.service'
 import { MailService } from '../mail/mail.service'
-import { CryptoService } from '../common/crypto/crypto.service'
-import { OidcService } from './oidc.service'
-import { EntitlementsService } from '../entitlements/entitlements.service'
 import * as templates from '../mail/templates'
 import { LoginDto } from './dto/login.dto'
 import {
@@ -21,20 +17,28 @@ import {
   ChangePasswordDto,
   ForgotPasswordDto,
   InviteDto,
-  RequestEmailLoginCodeDto,
   ResetPasswordDto,
-  UpdateProfileDto,
-  VerifyEmailLoginCodeDto,
 } from './dto/auth.dto'
 import { generateSecret, verifyToken, otpauthUrl, generateRecoveryCodes } from './totp'
+import { TenantResolverService } from '../common/tenant/tenant-resolver.service'
+import { runUnscoped } from '../prisma/tenant-context'
 
-type ClientCtx = { userAgent?: string; ipAddress?: string }
+type ClientCtx = { userAgent?: string; ipAddress?: string; hostname?: string }
+
+/**
+ * Upper bound on how many same-email accounts one login attempt will check.
+ * Keeps the argon2 cost of an unscoped attempt bounded.
+ */
+const MAX_CANDIDATE_ACCOUNTS = 10
+
+/** Roles and permissions required to build a JWT payload. */
+const USER_AUTH_INCLUDE = {
+  roles: { include: { role: { include: { permissions: { include: { permission: true } } } } } },
+} as const
 
 const REFRESH_TTL_S = Number(process.env.JWT_REFRESH_TTL) || 604800 // 7d
 const RESET_TTL_S = Number(process.env.PASSWORD_RESET_TTL) || 3600 // 1h
 const INVITE_TTL_S = Number(process.env.INVITE_TTL) || 604800 // 7d
-const EMAIL_CODE_TTL_S = Number(process.env.EMAIL_LOGIN_CODE_TTL) || 600 // 10m
-const EMAIL_CODE_MAX_ATTEMPTS = 5
 
 function sha256(raw: string): string {
   return createHash('sha256').update(raw).digest('hex')
@@ -44,90 +48,102 @@ function randomToken(): string {
   return randomBytes(32).toString('hex')
 }
 
-function randomUrlToken(bytes = 32): string {
-  return randomBytes(bytes).toString('base64url')
-}
-
-function safeRedirectPath(value?: string | null): string {
-  if (!value || value.length > 500 || !value.startsWith('/') || value.startsWith('//')) return '/'
-  return value
-}
-
-function emailCodeHash(challenge: string, code: string): string {
-  const secret = process.env.JWT_ACCESS_SECRET || 'development-only-email-code-secret'
-  return createHmac('sha256', secret).update(`${challenge}:${code}`).digest('hex')
-}
-
-function hashesMatch(left: string, right: string): boolean {
-  const a = Buffer.from(left, 'hex')
-  const b = Buffer.from(right, 'hex')
-  return a.length === b.length && a.length > 0 && timingSafeEqual(a, b)
-}
-
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly mail: MailService,
-    private readonly crypto: CryptoService,
-    private readonly oidc: OidcService,
-    private readonly entitlements: EntitlementsService,
+    private readonly tenants: TenantResolverService,
   ) {}
 
   // ── Core credential + payload helpers ────────────────────────────────────
-  async validateUser(email: string, password: string, workspace?: string) {
-    const candidates = await this.prisma.user.findMany({
+  /**
+   * Every account matching an address, optionally restricted to one tenant.
+   * `User` is unique on [organizationId, email] rather than on email alone, so
+   * an unscoped lookup can legitimately match several rows. Never use
+   * `findFirst({ where: { email } })` here: it silently picks an arbitrary
+   * tenant's account.
+   */
+  private async findAccountsByEmail(email: string, organizationId?: string | null) {
+    const emailLc = email.trim().toLowerCase()
+    // Credential lookup necessarily precedes knowing the tenant. Scoping is
+    // applied explicitly below via `organizationId`, not by the middleware.
+    return runUnscoped('login: resolve account before the tenant is known', () =>
+      this.prisma.user.findMany({
       where: {
-        email: email.trim().toLowerCase(),
-        ...(workspace ? { organization: { slug: workspace.trim().toLowerCase() } } : {}),
+        email: { equals: emailLc, mode: 'insensitive' as const },
+        ...(organizationId ? { organizationId } : {}),
       },
       include: {
-        organization: true,
-        roles: { include: { role: { include: { permissions: { include: { permission: true } } } } } },
+        ...USER_AUTH_INCLUDE,
+        organization: { select: { id: true, slug: true, name: true } },
       },
-    })
-    const matches: typeof candidates = []
-    for (const candidate of candidates) {
-      try {
-        if (await argon2.verify(candidate.passwordHash, password)) matches.push(candidate)
-      } catch {
-        // A malformed legacy hash must behave exactly like an invalid password.
-      }
-    }
-    // Email is tenant-scoped in the schema. If the same credentials match more
-    // than one workspace, refuse to guess which identity should receive tokens.
-    if (matches.length !== 1) throw new UnauthorizedException('Invalid credentials')
-    const user = matches[0]
-    if (user.status === 'suspended') throw new UnauthorizedException('Account suspended')
-    if (user.organization?.status === 'suspended' && !user.isSuperAdmin) {
-      throw new UnauthorizedException('Workspace suspended')
-    }
-    if (user.status === 'invited') throw new UnauthorizedException('Please accept your invitation to set a password')
-    return user
+      orderBy: { createdAt: 'asc' },
+      take: organizationId ? 1 : MAX_CANDIDATE_ACCOUNTS,
+      }),
+    )
   }
 
-  private async buildPayload(
-    userId: string,
-    db: PrismaService | Prisma.TransactionClient = this.prisma,
-  ) {
-    const user = await db.user.findUnique({
-      where: { id: userId },
-      include: {
-        organization: true,
-        roles: { include: { role: { include: { permissions: { include: { permission: true } } } } } },
-      },
-    })
-    if (!user || user.status !== 'active') throw new UnauthorizedException('Session is no longer valid')
-    if (user.organization?.status === 'suspended' && !user.isSuperAdmin) {
-      throw new UnauthorizedException('Workspace suspended')
+  /**
+   * Verify a password against the candidate accounts and return those it
+   * unlocks. Every candidate is checked rather than short-circuiting, so
+   * response time does not reveal how many workspaces the address belongs to.
+   */
+  private async verifyCredentials(email: string, password: string, organizationId?: string | null) {
+    const candidates = await this.findAccountsByEmail(email, organizationId)
+    const matches: typeof candidates = []
+    for (const user of candidates) {
+      let ok = false
+      try {
+        ok = await argon2.verify(user.passwordHash, password)
+      } catch {
+        ok = false // unreadable or legacy hash counts as a failed attempt
+      }
+      if (ok) matches.push(user)
     }
+    return matches
+  }
+
+  /** Account status gates, applied only once the password has been proven. */
+  private assertLoginable(user: { status: string }) {
+    if (user.status === 'suspended') throw new UnauthorizedException('Account suspended')
+    if (user.status === 'invited') {
+      throw new UnauthorizedException('Please accept your invitation to set a password')
+    }
+  }
+
+  /**
+   * Authenticate within a single tenant. Callers that cannot present a
+   * workspace-selection step must pass `organizationId`; an ambiguous match is
+   * rejected rather than resolved arbitrarily.
+   */
+  async validateUser(email: string, password: string, organizationId?: string | null) {
+    const matches = await this.verifyCredentials(email, password, organizationId)
+    if (matches.length === 0) throw new UnauthorizedException('Invalid credentials')
+    if (matches.length > 1) {
+      throw new UnauthorizedException(
+        'This email belongs to several workspaces \u2014 sign in from your workspace URL',
+      )
+    }
+    this.assertLoginable(matches[0])
+    return matches[0]
+  }
+
+  private async buildPayload(userId: string) {
+    // Builds the very context the middleware later relies on, so it cannot be
+    // scoped by it. Lookups are by primary key / unique id, not by tenant.
+    const user = await runUnscoped('auth: build JWT payload for a known user id', () =>
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        include: { roles: { include: { role: { include: { permissions: { include: { permission: true } } } } } } },
+      }),
+    )
+    if (!user) throw new UnauthorizedException('User not found')
     const permissions = user.roles.flatMap((ur) => ur.role.permissions.map((rp) => rp.permission.key))
-    // A user may exist before their affiliate application is approved. Never
-    // expose or mint portal context for pending/rejected/suspended affiliates.
-    const affiliate = await db.affiliate.findFirst({
-      where: { userId: user.id, status: 'approved' },
-    })
+    const affiliate = await runUnscoped('auth: resolve affiliate id for JWT payload', () =>
+      this.prisma.affiliate.findUnique({ where: { userId: user.id } }),
+    )
     return {
       user,
       payload: {
@@ -140,15 +156,11 @@ export class AuthService {
     }
   }
 
-  private async issueTokens(
-    userId: string,
-    ctx: ClientCtx = {},
-    db: PrismaService | Prisma.TransactionClient = this.prisma,
-  ) {
-    const { user, payload } = await this.buildPayload(userId, db)
+  private async issueTokens(userId: string, ctx: ClientCtx = {}) {
+    const { user, payload } = await this.buildPayload(userId)
     const access_token = await this.jwt.signAsync(payload)
     const refreshRaw = randomToken()
-    await db.refreshToken.create({
+    await this.prisma.refreshToken.create({
       data: {
         userId,
         tokenHash: sha256(refreshRaw),
@@ -164,12 +176,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         fullName: user.fullName,
-        phoneNumber: user.phoneNumber,
-        avatarUrl: user.avatarUrl,
         organizationId: user.organizationId,
-        organization: user.organization
-          ? { id: user.organization.id, name: user.organization.name, slug: user.organization.slug }
-          : undefined,
         permissions: payload.permissions,
         affiliateId: payload.affiliateId,
         isSuperAdmin: payload.isSuperAdmin,
@@ -186,8 +193,75 @@ export class AuthService {
   }
 
   // ── Login ────────────────────────────────────────────────────────────────
+  /**
+   * Tenant-first login.
+   *
+   * The workspace is resolved before the credential check, from an explicit
+   * `orgSlug` or from the Host header (white-label login domain or
+   * `<slug>.<root-domain>` subdomain). When no tenant can be resolved and the
+   * address unlocks accounts in more than one workspace, the caller receives a
+   * short-lived selection challenge instead of tokens for an arbitrary tenant.
+   */
   async login(dto: LoginDto, ctx: ClientCtx = {}) {
-    const user = await this.validateUser(dto.email, dto.password, dto.workspace)
+    const tenant = await this.tenants.resolve({ orgSlug: dto.orgSlug, hostname: ctx.hostname })
+    // An explicitly named but unknown workspace must fail exactly like a wrong
+    // password, otherwise this endpoint becomes a workspace-enumeration oracle.
+    if (dto.orgSlug && !tenant) throw new UnauthorizedException('Invalid credentials')
+
+    const matches = await this.verifyCredentials(dto.email, dto.password, tenant?.id ?? null)
+    if (matches.length === 0) throw new UnauthorizedException('Invalid credentials')
+
+    if (matches.length > 1) {
+      // The password is already proven for each of these accounts, so naming
+      // the workspaces discloses nothing the caller does not already control.
+      const challenge = await this.jwt.signAsync(
+        { userIds: matches.map((u) => u.id), purpose: 'workspace' },
+        { expiresIn: 300 },
+      )
+      return {
+        workspaceSelectionRequired: true as const,
+        challenge,
+        workspaces: matches.map((u) => ({ slug: u.organization.slug, name: u.organization.name })),
+      }
+    }
+
+    return this.completeLogin(matches[0], ctx)
+  }
+
+  /**
+   * Second step of an ambiguous login. The challenge pins the exact set of
+   * accounts the password unlocked, so no further credential check is required
+   * and the challenge cannot reach any other account.
+   */
+  async selectWorkspace(challenge: string, orgSlug: string, ctx: ClientCtx = {}) {
+    let claims: { userIds?: unknown; purpose?: unknown }
+    try {
+      claims = await this.jwt.verifyAsync(challenge)
+    } catch {
+      throw new UnauthorizedException('Invalid or expired workspace selection')
+    }
+    if (claims.purpose !== 'workspace' || !Array.isArray(claims.userIds)) {
+      throw new UnauthorizedException('Invalid or expired workspace selection')
+    }
+    const userIds = claims.userIds.filter((id): id is string => typeof id === 'string')
+    // The challenge itself pins which accounts are reachable, so this lookup is
+    // safe to run before a tenant context exists.
+    const user = await runUnscoped('login: exchange workspace-selection challenge', () =>
+      this.prisma.user.findFirst({
+        where: { id: { in: userIds }, organization: { slug: orgSlug.trim().toLowerCase() } },
+        include: USER_AUTH_INCLUDE,
+      }),
+    )
+    if (!user) throw new UnauthorizedException('Invalid or expired workspace selection')
+    return this.completeLogin(user, ctx)
+  }
+
+  /** Shared tail of every successful password login. */
+  private async completeLogin(
+    user: { id: string; status: string; twoFactorEnabled: boolean },
+    ctx: ClientCtx,
+  ) {
+    this.assertLoginable(user)
     // When 2FA is on, do NOT issue tokens yet — hand back a short-lived challenge
     // that must be exchanged (with a TOTP or recovery code) at /auth/2fa/verify.
     if (user.twoFactorEnabled) {
@@ -198,118 +272,13 @@ export class AuthService {
     return this.issueTokens(user.id, ctx)
   }
 
-  // ── Passwordless email-code login ───────────────────────────────────────
-  async requestEmailLoginCode(dto: RequestEmailLoginCodeDto) {
-    const email = dto.email.trim().toLowerCase()
-    const candidates = await this.prisma.user.findMany({
-      where: {
-        email,
-        ...(dto.workspace ? { organization: { slug: dto.workspace.trim().toLowerCase() } } : {}),
-      },
-      include: { organization: true },
-      take: 2,
-    })
-
-    // Always return an indistinguishable challenge to prevent account/email
-    // enumeration. Unknown, ambiguous, suspended and deleted accounts receive
-    // no email and their challenge can never verify.
-    const challenge = randomUrlToken(32)
-    const user = candidates.length === 1 ? candidates[0] : null
-    const eligible = user &&
-      (user.status === 'active' || user.status === 'invited') &&
-      (user.organization?.status !== 'suspended' || user.isSuperAdmin)
-    if (!eligible) return { ok: true, challenge, expiresInSeconds: EMAIL_CODE_TTL_S }
-
-    const now = new Date()
-    const sixDigitCode = randomInt(0, 1_000_000).toString().padStart(6, '0')
-    await this.prisma.$transaction(async (tx) => {
-      await tx.emailLoginCode.updateMany({
-        where: { userId: user.id, usedAt: null },
-        data: { usedAt: now },
-      })
-      await tx.emailLoginCode.create({
-        data: {
-          userId: user.id,
-          challengeHash: sha256(challenge),
-          codeHash: emailCodeHash(challenge, sixDigitCode),
-          expiresAt: new Date(now.getTime() + EMAIL_CODE_TTL_S * 1000),
-        },
-      })
-    })
-
-    const tpl = templates.emailLoginCode({
-      orgName: user.organization?.name ?? 'Affiliate',
-      settings: user.organization?.settings,
-      firstName: (user.fullName || 'there').split(' ')[0],
-      code: sixDigitCode,
-      ttlMinutes: Math.round(EMAIL_CODE_TTL_S / 60),
-    })
-    await this.mail.send({ to: user.email, subject: tpl.subject, html: tpl.html, text: tpl.text })
-    return { ok: true, challenge, expiresInSeconds: EMAIL_CODE_TTL_S }
-  }
-
-  async verifyEmailLoginCode(dto: VerifyEmailLoginCodeDto, ctx: ClientCtx = {}) {
-    const challenge = dto.challenge.trim()
-    const now = new Date()
-    const record = await this.prisma.emailLoginCode.findUnique({
-      where: { challengeHash: sha256(challenge) },
-      include: { user: { include: { organization: true } } },
-    })
-    const invalid = !record || record.usedAt || record.expiresAt <= now ||
-      record.attempts >= EMAIL_CODE_MAX_ATTEMPTS
-    if (invalid) throw new UnauthorizedException('Invalid or expired sign-in code')
-
-    const validCode = hashesMatch(record.codeHash, emailCodeHash(challenge, dto.code.trim()))
-    if (!validCode) {
-      await this.prisma.emailLoginCode.updateMany({
-        where: { id: record.id, usedAt: null, attempts: { lt: EMAIL_CODE_MAX_ATTEMPTS } },
-        data: { attempts: { increment: 1 } },
-      })
-      throw new UnauthorizedException('Invalid or expired sign-in code')
-    }
-
-    if (record.user.status === 'suspended' ||
-        (record.user.organization?.status === 'suspended' && !record.user.isSuperAdmin)) {
-      throw new UnauthorizedException('Invalid or expired sign-in code')
-    }
-
-    const consumed = await this.prisma.emailLoginCode.updateMany({
-      where: {
-        id: record.id,
-        usedAt: null,
-        expiresAt: { gt: now },
-        attempts: { lt: EMAIL_CODE_MAX_ATTEMPTS },
-      },
-      data: { usedAt: now },
-    })
-    if (consumed.count !== 1) throw new UnauthorizedException('Invalid or expired sign-in code')
-
-    await this.prisma.user.update({
-      where: { id: record.userId },
-      data: {
-        status: 'active',
-        emailVerifiedAt: record.user.emailVerifiedAt ?? now,
-        lastLoginAt: now,
-      },
-    })
-
-    if (record.user.twoFactorEnabled) {
-      const twoFactorChallenge = await this.jwt.signAsync(
-        { sub: record.userId, purpose: '2fa' },
-        { expiresIn: 300 },
-      )
-      return { twoFactorRequired: true as const, challenge: twoFactorChallenge }
-    }
-    return this.issueTokens(record.userId, ctx)
-  }
-
   // ── Two-factor authentication (TOTP) ──────────────────────────────────────
   /** Step 1: generate a secret + otpauth URL for the authenticator app. */
   async startTwoFactorSetup(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } })
     if (!user) throw new NotFoundException('User not found')
     const secret = generateSecret()
-    await this.prisma.user.update({ where: { id: userId }, data: { twoFactorSecret: this.crypto.encryptText(secret) } })
+    await this.prisma.user.update({ where: { id: userId }, data: { twoFactorSecret: secret } })
     const org = await this.prisma.organization.findUnique({ where: { id: user.organizationId } })
     return {
       secret,
@@ -322,9 +291,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } })
     if (!user || !user.twoFactorSecret) throw new BadRequestException('Start 2FA setup first')
     if (user.twoFactorEnabled) throw new BadRequestException('Two-factor is already enabled')
-    if (!verifyToken(this.crypto.decryptText(user.twoFactorSecret), code)) {
-      throw new BadRequestException('Invalid authentication code')
-    }
+    if (!verifyToken(user.twoFactorSecret, code)) throw new BadRequestException('Invalid authentication code')
     const recoveryCodes = generateRecoveryCodes()
     await this.prisma.user.update({
       where: { id: userId },
@@ -338,7 +305,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } })
     if (!user) throw new NotFoundException('User not found')
     if (!user.twoFactorEnabled || !user.twoFactorSecret) return { ok: true }
-    const valid = verifyToken(this.crypto.decryptText(user.twoFactorSecret), code) || user.twoFactorRecoveryCodes.includes(sha256(code.trim()))
+    const valid = verifyToken(user.twoFactorSecret, code) || user.twoFactorRecoveryCodes.includes(sha256(code.trim()))
     if (!valid) throw new BadRequestException('Invalid authentication code')
     await this.prisma.user.update({
       where: { id: userId },
@@ -361,7 +328,7 @@ export class AuthService {
     if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
       throw new UnauthorizedException('Two-factor is not enabled')
     }
-    if (verifyToken(this.crypto.decryptText(user.twoFactorSecret), code)) {
+    if (verifyToken(user.twoFactorSecret, code)) {
       await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
       return this.issueTokens(user.id, ctx)
     }
@@ -388,8 +355,10 @@ export class AuthService {
       enabled: s.enabled === true,
       provider: str(s.provider) || 'oidc',
       clientId: str(s.clientId),
-      clientSecret: this.crypto.decryptText(str(s.clientSecret)),
-      issuerUrl: str(s.issuerUrl),
+      clientSecret: str(s.clientSecret),
+      authorizationUrl: str(s.authorizationUrl),
+      tokenUrl: str(s.tokenUrl),
+      userinfoUrl: str(s.userinfoUrl),
       scopes: str(s.scopes) || 'openid email profile',
       allowedDomains: Array.isArray(s.allowedDomains)
         ? (s.allowedDomains as unknown[]).filter((d): d is string => typeof d === 'string')
@@ -407,105 +376,87 @@ export class AuthService {
   }
 
   /** Build the IdP authorize URL for an org (looked up by slug on the public login page). */
-  async ssoAuthorizeUrl(slug: string, redirectPath?: string) {
+  async ssoAuthorizeUrl(slug: string, redirectUri?: string) {
     const org = await this.prisma.organization.findUnique({ where: { slug } })
     if (!org) throw new NotFoundException('Organization not found')
-    if (org.status === 'suspended') throw new UnauthorizedException('Workspace suspended')
-    await this.entitlements.assertFeature(org.id, 'enterpriseSso')
     const cfg = this.ssoConfigFrom(org.settings)
-    if (!cfg.enabled || !cfg.issuerUrl || !cfg.clientId || !cfg.clientSecret) {
+    if (!cfg.enabled || !cfg.authorizationUrl || !cfg.clientId) {
       throw new BadRequestException('SSO is not configured for this organization')
     }
-    const configuration = await this.oidc.discover(cfg.issuerUrl)
-    const state = randomUrlToken()
-    const nonce = randomUrlToken()
-    const codeVerifier = randomUrlToken(48)
-    const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url')
-    await this.prisma.ssoLoginState.create({
-      data: {
-        organizationId: org.id,
-        stateHash: sha256(state),
-        codeVerifier,
-        nonce,
-        redirectPath: safeRedirectPath(redirectPath),
-        expiresAt: new Date(Date.now() + 10 * 60_000),
-      },
-    })
-    this.prisma.ssoLoginState
-      .deleteMany({ where: { expiresAt: { lt: new Date(Date.now() - 24 * 60 * 60_000) } } })
-      .catch(() => undefined)
+    const state = await this.jwt.signAsync(
+      { org: org.id, slug, redirectUri: redirectUri ?? null, purpose: 'sso' },
+      { expiresIn: 600 },
+    )
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: cfg.clientId,
       redirect_uri: this.ssoCallbackUrl(),
       scope: cfg.scopes,
       state,
-      nonce,
-      code_challenge: codeChallenge,
-      code_challenge_method: 'S256',
     })
-    return { url: `${configuration.authorization_endpoint}?${params.toString()}` }
+    return { url: `${cfg.authorizationUrl}?${params.toString()}` }
+  }
+
+  private async resolveSsoEmail(cfg: { userinfoUrl: string }, tokenJson: Record<string, unknown>) {
+    // Prefer id_token claims; fall back to the userinfo endpoint.
+    const idToken = tokenJson.id_token
+    if (typeof idToken === 'string' && idToken.split('.').length === 3) {
+      try {
+        const payload = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64').toString('utf8'))
+        if (typeof payload.email === 'string') return { email: payload.email as string, name: typeof payload.name === 'string' ? (payload.name as string) : null }
+      } catch {
+        // fall through to userinfo
+      }
+    }
+    if (cfg.userinfoUrl && typeof tokenJson.access_token === 'string') {
+      const uiRes = await fetch(cfg.userinfoUrl, { headers: { authorization: `Bearer ${tokenJson.access_token}` } })
+      if (uiRes.ok) {
+        const ui = (await uiRes.json()) as Record<string, unknown>
+        if (typeof ui.email === 'string') return { email: ui.email, name: typeof ui.name === 'string' ? ui.name : null }
+      }
+    }
+    return null
   }
 
   /** Handle the IdP redirect: exchange the code, resolve the user, and issue tokens. */
   async ssoCallback(code: string, state: string, ctx: ClientCtx = {}) {
-    if (!code || !state) throw new UnauthorizedException('Invalid SSO callback')
-    const stateRecord = await this.prisma.ssoLoginState.findUnique({ where: { stateHash: sha256(state) } })
-    if (!stateRecord || stateRecord.usedAt || stateRecord.expiresAt.getTime() < Date.now()) {
+    let decoded: { org: string; slug: string; redirectUri?: string | null; purpose?: string }
+    try {
+      decoded = await this.jwt.verifyAsync(state)
+      if (decoded.purpose !== 'sso') throw new Error('bad state')
+    } catch {
       throw new UnauthorizedException('Invalid or expired SSO state')
     }
-    const consumed = await this.prisma.ssoLoginState.updateMany({
-      where: { id: stateRecord.id, usedAt: null, expiresAt: { gt: new Date() } },
-      data: { usedAt: new Date() },
-    })
-    if (consumed.count !== 1) throw new UnauthorizedException('SSO state has already been used')
-
-    const org = await this.prisma.organization.findUnique({ where: { id: stateRecord.organizationId } })
+    const org = await this.prisma.organization.findUnique({ where: { id: decoded.org } })
     if (!org) throw new NotFoundException('Organization not found')
-    if (org.status === 'suspended') throw new UnauthorizedException('Workspace suspended')
-    await this.entitlements.assertFeature(org.id, 'enterpriseSso')
     const cfg = this.ssoConfigFrom(org.settings)
-    if (!cfg.enabled || !cfg.issuerUrl || !cfg.clientId || !cfg.clientSecret) {
-      throw new BadRequestException('SSO is not configured')
-    }
-    const configuration = await this.oidc.discover(cfg.issuerUrl)
-    const tokenJson = await this.oidc.exchangeCode({
-      configuration,
-      clientId: cfg.clientId,
-      clientSecret: cfg.clientSecret,
-      code,
-      codeVerifier: stateRecord.codeVerifier,
-      redirectUri: this.ssoCallbackUrl(),
+    if (!cfg.enabled) throw new BadRequestException('SSO is not enabled')
+
+    const tokenRes = await fetch(cfg.tokenUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: this.ssoCallbackUrl(),
+        client_id: cfg.clientId,
+        client_secret: cfg.clientSecret,
+      }).toString(),
     })
-    const resolved = await this.oidc.resolveIdentity({
-      configuration,
-      tokenJson,
-      clientId: cfg.clientId,
-      nonce: stateRecord.nonce,
-    })
-    const emailLc = resolved.email.trim().toLowerCase()
+    if (!tokenRes.ok) throw new UnauthorizedException('SSO token exchange failed')
+    const tokenJson = (await tokenRes.json()) as Record<string, unknown>
+
+    const resolved = await this.resolveSsoEmail(cfg, tokenJson)
+    if (!resolved) throw new UnauthorizedException('Could not resolve email from SSO provider')
+    const emailLc = resolved.email.toLowerCase()
     const domain = emailLc.split('@')[1] || ''
     if (cfg.allowedDomains.length && !cfg.allowedDomains.map((d) => d.toLowerCase()).includes(domain)) {
       throw new UnauthorizedException('Email domain is not allowed for SSO')
     }
 
-    let user = await this.prisma.user.findFirst({
-      where: { organizationId: org.id, ssoProvider: cfg.provider, ssoSubject: resolved.subject },
-    })
-    if (!user) {
-      user = await this.prisma.user.findFirst({ where: { organizationId: org.id, email: emailLc } })
-      if (user?.ssoSubject && (user.ssoProvider !== cfg.provider || user.ssoSubject !== resolved.subject)) {
-        throw new UnauthorizedException('This account is already linked to another SSO identity')
-      }
-    }
+    let user = await this.prisma.user.findFirst({ where: { organizationId: org.id, email: emailLc } })
     if (!user) {
       if (!cfg.autoProvision) throw new UnauthorizedException('No account for this email; contact your administrator')
-      if (!cfg.defaultRoleId) throw new UnauthorizedException('SSO auto-provisioning has no default role')
-      const role = await this.prisma.role.findFirst({
-        where: { id: cfg.defaultRoleId, OR: [{ organizationId: org.id }, { organizationId: null }] },
-      })
-      if (!role) throw new UnauthorizedException('SSO default role is invalid')
-      await this.entitlements.assertWithinLimit(org.id, 'teamMembers')
       user = await this.prisma.user.create({
         data: {
           organizationId: org.id,
@@ -514,7 +465,6 @@ export class AuthService {
           status: 'active',
           emailVerifiedAt: new Date(),
           ssoProvider: cfg.provider,
-          ssoSubject: resolved.subject,
           passwordHash: await argon2.hash(randomToken()),
         },
       })
@@ -529,80 +479,41 @@ export class AuthService {
     if (user.status === 'suspended') throw new UnauthorizedException('Account suspended')
     await this.prisma.user.update({
       where: { id: user.id },
-      data: {
-        lastLoginAt: new Date(),
-        status: user.status === 'invited' ? 'active' : user.status,
-        ssoProvider: cfg.provider,
-        ssoSubject: resolved.subject,
-      },
+      data: { lastLoginAt: new Date(), status: user.status === 'invited' ? 'active' : user.status, ssoProvider: cfg.provider },
     })
-    const exchangeCode = randomUrlToken()
-    await this.prisma.loginExchangeCode.create({
-      data: {
-        userId: user.id,
-        codeHash: sha256(exchangeCode),
-        expiresAt: new Date(Date.now() + 60_000),
-      },
-    })
-    return { exchangeCode, redirectPath: stateRecord.redirectPath }
-  }
-
-  /** Exchange the one-time browser bridge for normal auth tokens. */
-  async exchangeSsoLogin(code: string, ctx: ClientCtx = {}) {
-    const record = await this.prisma.loginExchangeCode.findUnique({ where: { codeHash: sha256(code) } })
-    if (!record || record.usedAt || record.expiresAt.getTime() < Date.now()) {
-      throw new UnauthorizedException('Invalid or expired sign-in code')
-    }
-    const consumed = await this.prisma.loginExchangeCode.updateMany({
-      where: { id: record.id, usedAt: null, expiresAt: { gt: new Date() } },
-      data: { usedAt: new Date() },
-    })
-    if (consumed.count !== 1) throw new UnauthorizedException('Sign-in code has already been used')
-    return this.issueTokens(record.userId, ctx)
+    const tokens = await this.issueTokens(user.id, ctx)
+    const base = decoded.redirectUri || process.env.APP_URL || 'http://localhost:3000'
+    return { tokens, redirectUri: base }
   }
 
   // ── Refresh with rotation + reuse detection ──────────────────────────────
   async refresh(refreshRaw: string, ctx: ClientCtx = {}) {
     const tokenHash = sha256(refreshRaw)
-    const initial = await this.prisma.refreshToken.findUnique({ where: { tokenHash } })
-    if (!initial) throw new UnauthorizedException('Invalid refresh token')
+    const existing = await this.prisma.refreshToken.findUnique({ where: { tokenHash } })
+    if (!existing) throw new UnauthorizedException('Invalid refresh token')
 
-    const outcome = await this.prisma.$transaction(async (tx) => {
-      // Serialize refreshes for this identity across every API process. When a
-      // duplicate request waits here, it sees the first rotation's committed
-      // revoked state and takes the breach path below instead of minting a
-      // second valid session.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`refresh:${initial.userId}`}))`
-      const existing = await tx.refreshToken.findUnique({ where: { tokenHash } })
-      if (!existing) return { kind: 'invalid' as const }
-
-      if (existing.revokedAt) {
-        await tx.refreshToken.updateMany({
-          where: { userId: existing.userId, revokedAt: null },
-          data: { revokedAt: new Date() },
-        })
-        // Return instead of throwing so the breach revocation is committed.
-        return { kind: 'reuse' as const }
-      }
-      if (existing.expiresAt.getTime() < Date.now()) return { kind: 'expired' as const }
-
-      const result = await this.issueTokens(existing.userId, ctx, tx)
-      const replacement = await tx.refreshToken.findUnique({
-        where: { tokenHash: sha256(result.refresh_token) },
+    // Reuse detection: a previously-rotated (revoked) token is being presented →
+    // treat as a breach and revoke every active token for that user.
+    if (existing.revokedAt) {
+      await this.prisma.refreshToken.updateMany({
+        where: { userId: existing.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
       })
-      await tx.refreshToken.update({
-        where: { id: existing.id },
-        data: { revokedAt: new Date(), replacedByTokenId: replacement?.id ?? null },
-      })
-      return { kind: 'success' as const, result }
-    })
-
-    if (outcome.kind === 'reuse') {
       throw new UnauthorizedException('Refresh token reuse detected — all sessions revoked')
     }
-    if (outcome.kind === 'expired') throw new UnauthorizedException('Refresh token expired')
-    if (outcome.kind === 'invalid') throw new UnauthorizedException('Invalid refresh token')
-    return outcome.result
+    if (existing.expiresAt.getTime() < Date.now()) {
+      throw new UnauthorizedException('Refresh token expired')
+    }
+
+    // Rotate: mint a new token, then revoke the old one pointing at the new.
+    const result = await this.issueTokens(existing.userId, ctx)
+    const newHash = sha256(result.refresh_token)
+    const replacement = await this.prisma.refreshToken.findUnique({ where: { tokenHash: newHash } })
+    await this.prisma.refreshToken.update({
+      where: { id: existing.id },
+      data: { revokedAt: new Date(), replacedByTokenId: replacement?.id ?? null },
+    })
+    return result
   }
 
   // ── Logout ───────────────────────────────────────────────────────────────
@@ -629,12 +540,7 @@ export class AuthService {
       id: user.id,
       email: user.email,
       fullName: user.fullName,
-      phoneNumber: user.phoneNumber,
-      avatarUrl: user.avatarUrl,
       organizationId: user.organizationId,
-      organization: user.organization
-        ? { id: user.organization.id, name: user.organization.name, slug: user.organization.slug }
-        : undefined,
       status: user.status,
       emailVerifiedAt: user.emailVerifiedAt,
       twoFactorEnabled: user.twoFactorEnabled,
@@ -642,51 +548,6 @@ export class AuthService {
       affiliateId: payload.affiliateId,
       isSuperAdmin: payload.isSuperAdmin ?? false,
     }
-  }
-
-  // ── Profile settings (authenticated) ───────────────────────────────────
-  async updateProfile(userId: string, dto: UpdateProfileDto) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } })
-    if (!user) throw new NotFoundException('User not found')
-
-    const data: {
-      fullName?: string
-      email?: string
-      phoneNumber?: string | null
-      avatarUrl?: string | null
-    } = {}
-
-    if (dto.fullName !== undefined) {
-      const fullName = dto.fullName.trim()
-      if (!fullName) throw new BadRequestException('Name is required')
-      data.fullName = fullName
-    }
-
-    if (dto.email !== undefined) {
-      const email = dto.email.trim().toLowerCase()
-      if (email !== user.email) {
-        if (!dto.currentPassword) throw new BadRequestException('Current password is required to change your email')
-        let passwordMatches = false
-        try { passwordMatches = await argon2.verify(user.passwordHash, dto.currentPassword) } catch {}
-        if (!passwordMatches) throw new BadRequestException('Current password is incorrect')
-        const duplicate = await this.prisma.user.findFirst({
-          where: { organizationId: user.organizationId, email, id: { not: userId } },
-          select: { id: true },
-        })
-        if (duplicate) throw new ConflictException('An account with this email already exists')
-        data.email = email
-      }
-    }
-
-    if (dto.phoneNumber !== undefined) {
-      data.phoneNumber = dto.phoneNumber?.trim() || null
-    }
-    if (dto.avatarUrl !== undefined) {
-      data.avatarUrl = dto.avatarUrl?.trim() || null
-    }
-
-    await this.prisma.user.update({ where: { id: userId }, data })
-    return this.me(userId)
   }
 
   // ── Change password (authenticated) ──────────────────────────────────────
@@ -704,82 +565,87 @@ export class AuthService {
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
     })
-    await this.prisma.emailLoginCode.updateMany({
-      where: { userId, usedAt: null },
-      data: { usedAt: new Date() },
-    })
     return { ok: true }
   }
 
   // ── Forgot / reset password ──────────────────────────────────────────────
-  async forgotPassword(dto: ForgotPasswordDto) {
-    const candidates = await this.prisma.user.findMany({
-      where: {
-        email: dto.email.trim().toLowerCase(),
-        ...(dto.workspace ? { organization: { slug: dto.workspace.trim().toLowerCase() } } : {}),
-      },
-      include: { organization: true },
-      take: 2,
-    })
-    // Always return ok to avoid leaking which emails exist.
-    const user = candidates.length === 1 ? candidates[0] : null
-    if (!user || user.status === 'suspended') return { ok: true }
+  /**
+   * Tenant-scoped password reset. Scoping matters as much as it does for login:
+   * an unscoped `findFirst` would mail a reset link for an arbitrary
+   * workspace's account, which for the recipient looks like a link that resets
+   * the wrong login. When no tenant is resolvable, one clearly-labelled link is
+   * sent per workspace the address belongs to.
+   */
+  async forgotPassword(dto: ForgotPasswordDto, ctx: ClientCtx = {}) {
+    const tenant = await this.tenants.resolve({ orgSlug: dto.orgSlug, hostname: ctx.hostname })
+    // Always return ok to avoid leaking which emails or workspaces exist.
+    if (dto.orgSlug && !tenant) return { ok: true }
 
-    const raw = randomToken()
-    await this.prisma.passwordResetToken.create({
-      data: {
-        userId: user.id,
-        tokenHash: sha256(raw),
-        expiresAt: new Date(Date.now() + RESET_TTL_S * 1000),
-      },
-    })
+    const users = await runUnscoped('password reset: find accounts before the tenant is known', () =>
+      this.prisma.user.findMany({
+        where: {
+          email: { equals: dto.email.trim().toLowerCase(), mode: 'insensitive' as const },
+          ...(tenant ? { organizationId: tenant.id } : {}),
+        },
+        include: { organization: true },
+        orderBy: { createdAt: 'asc' },
+        take: tenant ? 1 : MAX_CANDIDATE_ACCOUNTS,
+      }),
+    )
+
     const appUrl = process.env.APP_URL || 'http://localhost:3000'
-    const resetUrl = `${appUrl}/reset-password?token=${raw}`
-    const tpl = templates.passwordReset({
-      orgName: user.organization?.name ?? 'your account',
-      firstName: (user.fullName || 'there').split(' ')[0],
-      resetUrl,
-      ttlMinutes: Math.round(RESET_TTL_S / 60),
-    })
-    await this.mail.send({ to: user.email, subject: tpl.subject, html: tpl.html, text: tpl.text })
+    for (const user of users) {
+      if (user.status === 'suspended') continue
+
+      const raw = randomToken()
+      await this.prisma.passwordResetToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: sha256(raw),
+          expiresAt: new Date(Date.now() + RESET_TTL_S * 1000),
+        },
+      })
+      // The slug lets the reset page name the workspace being reset, so a user
+      // with several accounts can tell the links apart.
+      const params = new URLSearchParams({ token: raw })
+      if (user.organization?.slug) params.set('workspace', user.organization.slug)
+      const tpl = templates.passwordReset({
+        orgName: user.organization?.name ?? 'your account',
+        firstName: (user.fullName || 'there').split(' ')[0],
+        resetUrl: `${appUrl}/reset-password?${params.toString()}`,
+        ttlMinutes: Math.round(RESET_TTL_S / 60),
+      })
+      await this.mail.send({ to: user.email, subject: tpl.subject, html: tpl.html, text: tpl.text })
+    }
     return { ok: true }
   }
 
   async resetPassword(dto: ResetPasswordDto) {
-    const passwordHash = await argon2.hash(dto.password)
-    await this.prisma.$transaction(async (tx) => {
-      const now = new Date()
-      const record = await tx.passwordResetToken.findUnique({ where: { tokenHash: sha256(dto.token) } })
-      if (!record || record.usedAt || record.expiresAt.getTime() < now.getTime()) {
-        throw new BadRequestException('Invalid or expired reset token')
-      }
-      const consumed = await tx.passwordResetToken.updateMany({
-        where: { id: record.id, usedAt: null, expiresAt: { gt: now } },
-        data: { usedAt: now },
-      })
-      if (consumed.count !== 1) throw new BadRequestException('Reset token has already been used')
-      await tx.user.update({ where: { id: record.userId }, data: { passwordHash } })
-      await tx.emailLoginCode.updateMany({
-        where: { userId: record.userId, usedAt: null },
-        data: { usedAt: now },
-      })
-      await tx.passwordResetToken.updateMany({
-        where: { userId: record.userId, usedAt: null },
-        data: { usedAt: now },
-      })
-      await tx.refreshToken.updateMany({
-        where: { userId: record.userId, revokedAt: null },
-        data: { revokedAt: now },
-      })
+    const record = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash: sha256(dto.token) } })
+    if (!record || record.usedAt || record.expiresAt.getTime() < Date.now()) {
+      throw new BadRequestException('Invalid or expired reset token')
+    }
+    await this.prisma.user.update({
+      where: { id: record.userId },
+      data: { passwordHash: await argon2.hash(dto.password) },
+    })
+    await this.prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } })
+    // Invalidate any other outstanding reset tokens and active sessions.
+    await this.prisma.passwordResetToken.updateMany({
+      where: { userId: record.userId, usedAt: null },
+      data: { usedAt: new Date() },
+    })
+    await this.prisma.refreshToken.updateMany({
+      where: { userId: record.userId, revokedAt: null },
+      data: { revokedAt: new Date() },
     })
     return { ok: true }
   }
 
   // ── Invitations ──────────────────────────────────────────────────────────
   async invite(dto: InviteDto, organizationId: string, invitedByUserId: string) {
-    const email = dto.email.trim().toLowerCase()
     const existingUser = await this.prisma.user.findFirst({
-      where: { organizationId, email },
+      where: { organizationId, email: dto.email },
     })
     if (existingUser && existingUser.status !== 'invited') {
       throw new ConflictException('A user with this email already exists')
@@ -792,13 +658,12 @@ export class AuthService {
     }
 
     // Create (or keep) a placeholder invited user so roles can be attached on accept.
-    if (!existingUser) await this.entitlements.assertWithinLimit(organizationId, 'teamMembers')
     const user =
       existingUser ??
       (await this.prisma.user.create({
         data: {
           organizationId,
-          email,
+          email: dto.email,
           fullName: dto.fullName,
           status: 'invited',
           passwordHash: await argon2.hash(randomToken()),
@@ -806,16 +671,10 @@ export class AuthService {
       }))
 
     const raw = randomToken()
-    // Only the newest invitation remains valid. This prevents an old email link
-    // from accepting a role that an administrator subsequently changed.
-    await this.prisma.invitation.updateMany({
-      where: { organizationId, email, acceptedAt: null },
-      data: { acceptedAt: new Date() },
-    })
     await this.prisma.invitation.create({
       data: {
         organizationId,
-        email,
+        email: dto.email,
         roleId: dto.roleId,
         tokenHash: sha256(raw),
         expiresAt: new Date(Date.now() + INVITE_TTL_S * 1000),
@@ -832,204 +691,59 @@ export class AuthService {
       ttlDays: Math.round(INVITE_TTL_S / 86400),
       settings: org?.settings ?? null,
     })
-    await this.mail.send({ to: email, subject: tpl.subject, html: tpl.html, text: tpl.text })
+    await this.mail.send({ to: dto.email, subject: tpl.subject, html: tpl.html, text: tpl.text })
     return { ok: true, userId: user.id }
   }
 
-  /**
-   * Link an approved affiliate to a login account. New/invited users receive a
-   * one-time password setup link; an existing active user in the same workspace
-   * is linked and receives the normal portal approval email.
-   */
-  async provisionAffiliateAccess(input: {
-    affiliateId: string
-    affiliateCode: string
-    organizationId: string
-    email: string
-    fullName?: string
-    firstName?: string
-    invitedByUserId?: string
-  }) {
-    const email = input.email.trim().toLowerCase()
-    const fullName = input.fullName?.trim() || undefined
-    const firstName = input.firstName?.trim() || fullName?.split(/\s+/)[0] || 'there'
-    const org = await this.prisma.organization.findUnique({ where: { id: input.organizationId } })
-    if (!org) throw new NotFoundException('Organization not found')
-
-    const raw = randomToken()
-    const result = await this.prisma.$transaction(async (tx) => {
-      const affiliate = await tx.affiliate.findFirst({
-        where: { id: input.affiliateId, organizationId: input.organizationId },
-      })
-      if (!affiliate) throw new NotFoundException('Affiliate not found')
-
-      const existingUser = await tx.user.findFirst({
-        where: { organizationId: input.organizationId, email },
-        include: { affiliate: true },
-      })
-      if (existingUser?.status === 'suspended') {
-        throw new ConflictException('This email belongs to a suspended account')
-      }
-      if (existingUser?.affiliate && existingUser.affiliate.id !== affiliate.id) {
-        throw new ConflictException('This user already has an affiliate account')
-      }
-      if (affiliate.userId && affiliate.userId !== existingUser?.id) {
-        throw new ConflictException('This affiliate is already linked to another user')
-      }
-
-      const user =
-        existingUser ??
-        (await tx.user.create({
-          data: {
-            organizationId: input.organizationId,
-            email,
-            fullName,
-            status: 'invited',
-            passwordHash: await argon2.hash(randomToken()),
-          },
-        }))
-
-      const setupRequired = user.status === 'invited'
-      if (setupRequired) {
-        await tx.invitation.create({
-          data: {
-            organizationId: input.organizationId,
-            email,
-            tokenHash: sha256(raw),
-            expiresAt: new Date(Date.now() + INVITE_TTL_S * 1000),
-            invitedByUserId: input.invitedByUserId,
-          },
-        })
-      }
-
-      await tx.affiliate.update({
-        where: { id: affiliate.id },
-        data: { userId: user.id },
-      })
-
-      return { userId: user.id, setupRequired }
-    })
-
-    const destinationUrl = result.setupRequired
-      ? `${process.env.APP_URL || 'http://localhost:3000'}/accept-invite?token=${raw}`
-      : `${process.env.APP_URL || 'http://localhost:3000'}/portal`
-    const tpl = templates.applicationApproved({
-      orgName: org.name,
-      firstName,
-      affiliateCode: input.affiliateCode,
-      portalUrl: destinationUrl,
-      setupRequired: result.setupRequired,
-      settings: org.settings,
-    })
-    await this.mail.send({ to: email, subject: tpl.subject, html: tpl.html, text: tpl.text })
-
-    return { ok: true, userId: result.userId, invitationSent: result.setupRequired }
-  }
-
   async acceptInvite(dto: AcceptInviteDto, ctx: ClientCtx = {}) {
-    const passwordHash = await argon2.hash(dto.password)
-    const userId = await this.prisma.$transaction(async (tx) => {
-      const now = new Date()
-      const invite = await tx.invitation.findUnique({ where: { tokenHash: sha256(dto.token) } })
-      if (!invite || invite.acceptedAt || invite.expiresAt.getTime() < now.getTime()) {
-        throw new BadRequestException('Invalid or expired invitation')
-      }
-      const consumed = await tx.invitation.updateMany({
-        where: { id: invite.id, acceptedAt: null, expiresAt: { gt: now } },
-        data: { acceptedAt: now },
+    const invite = await this.prisma.invitation.findUnique({ where: { tokenHash: sha256(dto.token) } })
+    if (!invite || invite.acceptedAt || invite.expiresAt.getTime() < Date.now()) {
+      throw new BadRequestException('Invalid or expired invitation')
+    }
+    const user = await this.prisma.user.findFirst({
+      where: { organizationId: invite.organizationId, email: invite.email },
+    })
+    if (!user) throw new NotFoundException('Invited user not found')
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        fullName: dto.fullName ?? user.fullName,
+        passwordHash: await argon2.hash(dto.password),
+        status: 'active',
+        emailVerifiedAt: new Date(),
+      },
+    })
+    if (invite.roleId) {
+      await this.prisma.userRole.upsert({
+        where: { userId_roleId: { userId: user.id, roleId: invite.roleId } },
+        create: { userId: user.id, roleId: invite.roleId },
+        update: {},
       })
-      if (consumed.count !== 1) throw new BadRequestException('Invitation has already been used')
-      const user = await tx.user.findFirst({
-        where: { organizationId: invite.organizationId, email: invite.email },
-      })
-      if (!user) throw new NotFoundException('Invited user not found')
-      if (invite.roleId) {
-        const role = await tx.role.findFirst({
-          where: { id: invite.roleId, OR: [{ organizationId: invite.organizationId }, { organizationId: null }] },
-        })
-        if (!role) throw new BadRequestException('Invitation role is no longer valid')
-      }
-      await tx.user.update({
-        where: { id: user.id },
-        data: {
-          fullName: dto.fullName?.trim() || user.fullName,
-          passwordHash,
-          status: 'active',
-          emailVerifiedAt: now,
-        },
-      })
-      if (invite.roleId) {
-        await tx.userRole.upsert({
-          where: { userId_roleId: { userId: user.id, roleId: invite.roleId } },
-          create: { userId: user.id, roleId: invite.roleId },
-          update: {},
-        })
-      }
-      await tx.invitation.updateMany({
-        where: { organizationId: invite.organizationId, email: invite.email, acceptedAt: null },
-        data: { acceptedAt: now },
-      })
-      return user.id
-    }, { isolationLevel: 'Serializable' })
-    return this.issueTokens(userId, ctx)
+    }
+    await this.prisma.invitation.update({ where: { id: invite.id }, data: { acceptedAt: new Date() } })
+    return this.issueTokens(user.id, ctx)
   }
 
   // ── Account deletion / GDPR right to erasure ─────────────────────────────
   // Anonymizes all PII stored on the user row and revokes every active session.
   // The user row itself is kept to preserve referential integrity (affiliate
   // records, audit logs, commission history) but contains no recoverable data.
-  async deleteAccount(userId: string, currentPassword: string) {
-    const user = await this.prisma.user.findUnique({
+  async deleteAccount(userId: string) {
+    // 1. Revoke all refresh sessions immediately.
+    await this.prisma.refreshToken.updateMany({ where: { userId }, data: { revokedAt: new Date() } })
+    // 2. Overwrite PII with anonymous values.
+    await this.prisma.user.update({
       where: { id: userId },
-      select: { id: true, passwordHash: true, isSuperAdmin: true, affiliate: { select: { id: true } } },
-    })
-    if (!user) throw new NotFoundException('User not found')
-    if (user.isSuperAdmin) {
-      throw new BadRequestException('A platform super-admin cannot self-delete; transfer platform ownership first')
-    }
-    let passwordMatches = false
-    try { passwordMatches = await argon2.verify(user.passwordHash, currentPassword) } catch {}
-    if (!passwordMatches) throw new UnauthorizedException('Current password is incorrect')
-
-    const anonymizedPassword = await argon2.hash(randomToken(), { type: argon2.argon2id })
-    const anonymizedEmail = `deleted_${randomToken()}@account.invalid`
-    await this.prisma.$transaction(async (tx) => {
-      await tx.refreshToken.updateMany({ where: { userId }, data: { revokedAt: new Date() } })
-      await tx.passwordResetToken.deleteMany({ where: { userId } })
-      await tx.emailLoginCode.deleteMany({ where: { userId } })
-      await tx.loginExchangeCode.deleteMany({ where: { userId } })
-      await tx.shopifyStaffIdentity.deleteMany({ where: { userId } })
-      await tx.userRole.deleteMany({ where: { userId } })
-
-      if (user.affiliate) {
-        await tx.payoutMethodRecord.updateMany({
-          where: { affiliateId: user.affiliate.id },
-          data: { detailsEnc: null, isDefault: false },
-        })
-        await tx.affiliate.update({
-          where: { id: user.affiliate.id },
-          data: { taxInfo: Prisma.DbNull, status: 'suspended' },
-        })
-      }
-
-      await tx.user.update({
-        where: { id: userId },
-        data: {
-          email: anonymizedEmail,
-          fullName: 'Deleted Account',
-          phoneNumber: null,
-          avatarUrl: null,
-          passwordHash: anonymizedPassword,
-          emailVerifiedAt: null,
-          twoFactorSecret: null,
-          twoFactorEnabled: false,
-          twoFactorRecoveryCodes: [],
-          ssoProvider: null,
-          ssoSubject: null,
-          lastLoginAt: null,
-          status: 'suspended',
-        },
-      })
+      data: {
+        email: `deleted_${userId}@account.invalid`,
+        fullName: 'Deleted Account',
+        passwordHash: await argon2.hash(randomToken()), // random → unguessable
+        twoFactorSecret: null,
+        twoFactorEnabled: false,
+        twoFactorRecoveryCodes: [],
+        status: 'suspended',
+      },
     })
     return { ok: true, message: 'Account data anonymized and all sessions revoked.' }
   }

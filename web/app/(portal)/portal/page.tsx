@@ -16,9 +16,9 @@ export default function PortalOverview() {
       />
       {error && <p className="text-xs text-danger mb-2">{error}</p>}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
-        <StatCard label="Available balance" value={money(data?.availableBalance ?? 0, data?.currency)} />
-        <StatCard label="Pending" value={money(data?.pending ?? 0, data?.currency)} />
-        <StatCard label="Lifetime earnings" value={money(data?.lifetimeEarnings ?? 0, data?.currency)} />
+        <StatCard label="Available balance" value={money(data?.availableBalance ?? 0)} />
+        <StatCard label="Pending" value={money(data?.pending ?? 0)} />
+        <StatCard label="Lifetime earnings" value={money(data?.lifetimeEarnings ?? 0)} />
         <StatCard label="Conversion rate" value={`${data?.conversionRate ?? 0}%`} />
       </div>
       <div className="grid lg:grid-cols-2 gap-2">

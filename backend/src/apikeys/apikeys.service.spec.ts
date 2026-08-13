@@ -3,7 +3,6 @@ import { NotFoundException, UnauthorizedException } from '@nestjs/common'
 import { createHash } from 'crypto'
 import { ApiKeysService } from './apikeys.service'
 import { PrismaService } from '../prisma/prisma.service'
-import { EntitlementsService } from '../entitlements/entitlements.service'
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
@@ -22,17 +21,7 @@ describe('ApiKeysService', () => {
       },
     }
     const moduleRef = await Test.createTestingModule({
-      providers: [
-        ApiKeysService,
-        { provide: PrismaService, useValue: prisma },
-        {
-          provide: EntitlementsService,
-          useValue: {
-            assertFeature: jest.fn().mockResolvedValue(undefined),
-            assertWithinLimit: jest.fn().mockResolvedValue(undefined),
-          },
-        },
-      ],
+      providers: [ApiKeysService, { provide: PrismaService, useValue: prisma }],
     }).compile()
     service = moduleRef.get(ApiKeysService)
   })
@@ -76,18 +65,10 @@ describe('ApiKeysService', () => {
 
     it('returns record and updates lastUsedAt for a valid key', async () => {
       const raw = 'aff_live_' + 'b'.repeat(48)
-      prisma.apiKey.findFirst.mockResolvedValue({
-        id: 'k-1',
-        organizationId: 'org-1',
-        scopes: ['orders.write'],
-        organization: { status: 'active' },
-      })
+      prisma.apiKey.findFirst.mockResolvedValue({ id: 'k-1', organizationId: 'org-1', scopes: ['orders.write'] })
       const rec = await service.verify(raw)
       expect(rec.id).toBe('k-1')
-      expect(prisma.apiKey.findFirst).toHaveBeenCalledWith({
-        where: { keyHash: sha256(raw) },
-        include: { organization: true },
-      })
+      expect(prisma.apiKey.findFirst).toHaveBeenCalledWith({ where: { keyHash: sha256(raw) } })
       expect(prisma.apiKey.update).toHaveBeenCalled()
     })
   })

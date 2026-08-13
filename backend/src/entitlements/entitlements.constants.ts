@@ -12,19 +12,11 @@ export const FEATURE_KEYS = [
   'bulkOperations',
   'branding',
   'customDomain',
-  'enterpriseSso',
   'prioritySupport',
 ] as const
 export type FeatureKey = (typeof FEATURE_KEYS)[number]
 
-export const LIMIT_KEYS = [
-  'affiliates',
-  'stores',
-  'teamMembers',
-  'apiKeys',
-  'trackingLinksPerAffiliate',
-  'monthlyPayoutRequestsPerAffiliate',
-] as const
+export const LIMIT_KEYS = ['affiliates', 'stores', 'teamMembers', 'apiKeys'] as const
 export type LimitKey = (typeof LIMIT_KEYS)[number]
 
 export interface Entitlements {
@@ -43,7 +35,6 @@ export const FREE_FALLBACK: Entitlements = {
     bulkOperations: false,
     branding: false,
     customDomain: false,
-    enterpriseSso: false,
     prioritySupport: false,
   },
   limits: {
@@ -51,8 +42,6 @@ export const FREE_FALLBACK: Entitlements = {
     stores: 1,
     teamMembers: 1,
     apiKeys: 0,
-    trackingLinksPerAffiliate: 5,
-    monthlyPayoutRequestsPerAffiliate: 1,
   },
 }
 
@@ -66,7 +55,6 @@ export const FEATURE_LABELS: Record<FeatureKey, string> = {
   bulkOperations: 'Bulk import / export',
   branding: 'Custom branding (white-label)',
   customDomain: 'Custom login domain',
-  enterpriseSso: 'Enterprise SSO (OIDC)',
   prioritySupport: 'Priority support',
 }
 
@@ -75,8 +63,6 @@ export const LIMIT_LABELS: Record<LimitKey, string> = {
   stores: 'Connected stores',
   teamMembers: 'Team members',
   apiKeys: 'API keys',
-  trackingLinksPerAffiliate: 'Tracking links per affiliate',
-  monthlyPayoutRequestsPerAffiliate: 'Monthly payout requests per affiliate',
 }
 
 /**
@@ -109,17 +95,9 @@ export const DEFAULT_PLANS: Array<{
       bulkOperations: false,
       branding: false,
       customDomain: false,
-      enterpriseSso: false,
       prioritySupport: false,
     },
-    limits: {
-      affiliates: 50,
-      stores: 1,
-      teamMembers: 2,
-      apiKeys: 1,
-      trackingLinksPerAffiliate: 10,
-      monthlyPayoutRequestsPerAffiliate: 2,
-    },
+    limits: { affiliates: 50, stores: 1, teamMembers: 2, apiKeys: 1 },
   },
   {
     key: 'growth',
@@ -137,17 +115,9 @@ export const DEFAULT_PLANS: Array<{
       bulkOperations: true,
       branding: true,
       customDomain: false,
-      enterpriseSso: false,
       prioritySupport: false,
     },
-    limits: {
-      affiliates: 1000,
-      stores: 5,
-      teamMembers: 10,
-      apiKeys: 5,
-      trackingLinksPerAffiliate: 250,
-      monthlyPayoutRequestsPerAffiliate: 10,
-    },
+    limits: { affiliates: 1000, stores: 5, teamMembers: 10, apiKeys: 5 },
   },
   {
     key: 'enterprise',
@@ -165,16 +135,8 @@ export const DEFAULT_PLANS: Array<{
       bulkOperations: true,
       branding: true,
       customDomain: true,
-      enterpriseSso: true,
       prioritySupport: true,
     },
-    limits: {
-      affiliates: -1,
-      stores: -1,
-      teamMembers: -1,
-      apiKeys: -1,
-      trackingLinksPerAffiliate: -1,
-      monthlyPayoutRequestsPerAffiliate: -1,
-    },
+    limits: { affiliates: -1, stores: -1, teamMembers: -1, apiKeys: -1 },
   },
 ]

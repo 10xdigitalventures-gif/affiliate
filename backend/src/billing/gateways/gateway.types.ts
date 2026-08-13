@@ -92,8 +92,6 @@ export interface CreateInvoiceInput {
   /** true => charge the saved card now; false => email the client to pay. */
   autoCharge?: boolean
   metadata?: Record<string, string>
-  /** Stable retry key; adapters forward it as an Idempotency-Key header. */
-  idempotencyKey?: string
 }
 
 export interface InvoiceResult {

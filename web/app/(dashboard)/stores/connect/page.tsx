@@ -7,7 +7,7 @@ import { PageHeader } from '@/components/ui/page-header'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4100/v1').replace(/\/$/, '')
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/v1').replace(/\/$/, '')
 
 function CodeBlock({ code }: { code: string }) {
   const [copied, setCopied] = useState(false)
