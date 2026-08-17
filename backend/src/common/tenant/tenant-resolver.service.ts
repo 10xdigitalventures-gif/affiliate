@@ -68,7 +68,12 @@ export class TenantResolverService {
     if (!raw) return null
     const value = Array.isArray(raw) ? raw[0] : raw
     if (!value) return null
-    const host = value.split(',')[0].trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '')
+    const host = value
+      .split(',')[0]
+      .trim()
+      .toLowerCase()
+      .replace(/\.$/, '')
+      .replace(/:\d+$/, '')
     return host || null
   }
 
