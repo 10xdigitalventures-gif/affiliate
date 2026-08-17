@@ -31,6 +31,7 @@ import {
 export class WhopGateway implements PaymentGateway {
   readonly provider = 'whop' as const
   private readonly baseUrl: string
+  private static readonly REPLAY_WINDOW_SECONDS = 600
 
   constructor(private readonly creds: GatewayCredentials) {
     this.baseUrl = (creds.baseUrl || 'https://api.whop.com/api/v1').replace(/\/+$/, '')
@@ -98,7 +99,6 @@ export class WhopGateway implements PaymentGateway {
       payment_method_id: input.paymentMethodId ?? undefined,
       promo_code_id: input.promoCodeId ?? undefined,
       metadata: input.metadata ?? undefined,
-      // Whop expects a major-unit decimal price on the inline plan.
       plan: {
         initial_price: round2(input.amountCents / 100),
         currency: input.currency.toLowerCase(),
@@ -146,6 +146,13 @@ export class WhopGateway implements PaymentGateway {
     const sigHeader = header(req.headers, 'webhook-signature')
     if (!id || !ts || !sigHeader) throw new GatewayError('Missing Whop webhook signature headers', 'whop', 400)
 
+    // ── Replay attack protection ─────────────────────────────────────────────
+    // Reject webhooks whose timestamp is older than the replay window.
+    const tsNum = Number(ts)
+    if (isNaN(tsNum) || Math.floor(Date.now() / 1000) - tsNum > WhopGateway.REPLAY_WINDOW_SECONDS) {
+      throw new GatewayError('Whop webhook replay rejected: request is stale', 'whop', 401)
+    }
+
     const secretBytes = Buffer.from(secret.replace(/^whsec_/, ''), 'base64')
     const signedContent = `${id}.${ts}.${req.rawBody}`
     const expected = createHmac('sha256', secretBytes).update(signedContent).digest('base64')
@@ -155,6 +162,13 @@ export class WhopGateway implements PaymentGateway {
     if (!ok) throw new GatewayError('Whop webhook signature mismatch', 'whop', 401)
 
     const evt = safeJson(req.rawBody)
+
+    // ── Company ID validation ────────────────────────────────────────────────
+    // Reject events that are signed correctly but belong to a different company.
+    if (this.creds.companyId && evt.company_id && evt.company_id !== this.creds.companyId) {
+      throw new GatewayError('Whop webhook company does not match', 'whop', 401)
+    }
+
     return { id, type: evt.type ?? 'unknown', data: evt.data ?? evt, provider: 'whop', raw: evt }
   }
 
@@ -162,7 +176,6 @@ export class WhopGateway implements PaymentGateway {
     return true
   }
 
-  // Whop payouts move money out of your ledger to a payout method / connected user.
   async createPayout(input: PayoutInput): Promise<PayoutResult> {
     const tr = await this.req<any>('POST', '/transfers', {
       company_id: this.creds.companyId,

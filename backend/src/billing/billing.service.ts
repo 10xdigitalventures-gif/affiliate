@@ -71,7 +71,6 @@ export class BillingService {
       data: {
         label: dto.label ?? existing.label,
         companyId: dto.companyId ?? existing.companyId,
-        // Only replace secrets when a new plaintext value is supplied.
         apiKeyEnc: dto.apiKey ? this.crypto.encrypt(dto.apiKey) : existing.apiKeyEnc,
         webhookSecretEnc: dto.webhookSecret ? this.crypto.encrypt(dto.webhookSecret) : existing.webhookSecretEnc,
         isLive: dto.isLive ?? existing.isLive,
@@ -97,11 +96,7 @@ export class BillingService {
     return { deleted: true }
   }
 
-  // ── Tenant self-service gateways (scope = 'tenant') ─────────────────────
-  // Merchants configure and use their OWN Whop / Swich accounts, fully
-  // isolated from the platform gateways. Primary use: paying affiliate
-  // payouts (Swich supports disbursements).
-
+  // ── Tenant self-service gateways ─────────────────────────────────────
   listTenantConfigs(organizationId: string) {
     return this.listConfigs('tenant', organizationId)
   }
@@ -116,7 +111,6 @@ export class BillingService {
 
   async updateTenantConfig(organizationId: string, id: string, dto: UpsertGatewayConfigDto) {
     await this.getTenantConfigRow(organizationId, id)
-    // scope + organizationId stay immutable for tenant configs.
     return this.updateConfig(id, { ...dto, scope: 'tenant', organizationId })
   }
 
@@ -126,7 +120,6 @@ export class BillingService {
     return { deleted: true }
   }
 
-  /** Send an affiliate / client payout through one of the tenant's own gateways. */
   async createTenantPayout(organizationId: string, dto: CreatePayoutDto) {
     const config = await this.getTenantConfigRow(organizationId, dto.configId)
     const gateway = this.factory.build(config)
@@ -146,7 +139,6 @@ export class BillingService {
     return row
   }
 
-  /** The webhook URL a merchant pastes into the Whop / Swich dashboard. */
   webhookUrl(configId: string, provider: ProviderName): string {
     const base = (process.env.APP_PUBLIC_URL || process.env.API_PUBLIC_URL || 'http://localhost:4000').replace(/\/+$/, '')
     const prefix = process.env.API_PREFIX || 'v1'
@@ -164,7 +156,6 @@ export class BillingService {
       returnUrl: dto.returnUrl ?? undefined,
       metadata: { organizationId, configId: config.id },
     })
-    // Ensure a BillingCustomer shell exists to attach the card later (via webhook).
     await this.prisma.billingCustomer.upsert({
       where: { organizationId_configId: { organizationId, configId: config.id } },
       create: { organizationId, configId: config.id, provider: config.provider, email: org.email ?? null },
@@ -173,7 +164,7 @@ export class BillingService {
     return { url: session.url, sessionId: session.id, provider: config.provider }
   }
 
-  // ── Off-session charge (+ tax) with hosted invoice/receipt ──────────────────
+  // ── Off-session charge (+ tax) ──────────────────────────────────────────
   async chargeTenant(organizationId: string, dto: ChargeTenantDto) {
     const org = await this.getOrg(organizationId)
     const { config, customer } = await this.requireCustomer(organizationId)
@@ -185,7 +176,6 @@ export class BillingService {
     const total = subtotal + tax
     const lineItems = this.buildLineItems(dto.description ?? 'Subscription charge', subtotal, tax, config)
 
-    // Persist the invoice locally first (draft), then charge.
     const invoice = await this.prisma.billingInvoice.create({
       data: {
         organizationId, configId: config.id, customerId: customer.id, provider: config.provider,
@@ -215,7 +205,7 @@ export class BillingService {
     return { invoiceId: invoice.id, ...result, subtotalCents: subtotal, taxCents: tax, totalCents: total }
   }
 
-  // ── Subscriptions with plan trial ───────────────────────────────────────
+  // ── Subscriptions ────────────────────────────────────────────────────
   async startSubscription(organizationId: string, dto: StartSubscriptionDto) {
     await this.getOrg(organizationId)
     const plan = await this.prisma.plan.findUnique({ where: { id: dto.planId } })
@@ -238,14 +228,14 @@ export class BillingService {
     })
     await this.prisma.organization.update({ where: { id: organizationId }, data: { plan: plan.key } })
 
-    // Collect a card up-front (charged automatically when the trial ends).
     const setup = await this.startSetup(organizationId, { configId: dto.configId, returnUrl: dto.returnUrl })
     return { planKey: plan.key, trialDays, trialEndsAt, setupUrl: setup.url, provider: setup.provider }
   }
 
   /**
    * Billing cycle worker: charge every subscription whose trial/period has
-   * ended. Intended to be invoked by a daily cron / queue job.
+   * ended. Uses an idempotency lock (billingLockKey) so concurrent workers
+   * cannot double-charge the same subscription.
    */
   async runBillingCycle(now = new Date()) {
     const due = await this.prisma.subscription.findMany({
@@ -255,8 +245,19 @@ export class BillingService {
       },
       include: { plan: true },
     })
-    const results: Array<{ organizationId: string; ok: boolean; error?: string }> = []
+    const results: Array<{ organizationId: string; ok: boolean; skipped?: boolean; error?: string }> = []
     for (const sub of due) {
+      // Deterministic lock key: identifies this exact billing cycle instance.
+      const lockKey = `billing:${sub.organizationId}:${(sub.currentPeriodEnd ?? now).toISOString()}`
+      // Try to claim the subscription; count === 0 means another worker already owns it.
+      const claimed = await this.prisma.subscription.updateMany({
+        where: { id: sub.id, billingLockKey: null },
+        data: { billingLockKey: lockKey },
+      })
+      if (claimed.count === 0) {
+        results.push({ organizationId: sub.organizationId, ok: true, skipped: true })
+        continue
+      }
       try {
         if (sub.plan.priceCents > 0) {
           await this.chargeTenant(sub.organizationId, {
@@ -266,13 +267,20 @@ export class BillingService {
             recurring: true, autoCharge: true,
           })
         }
-        await this.prisma.subscription.update({
-          where: { organizationId: sub.organizationId },
-          data: { status: 'active', currentPeriodEnd: this.nextPeriodEnd(sub.plan.interval, sub.currentPeriodEnd ?? now) },
+        await this.prisma.subscription.updateMany({
+          where: { id: sub.id },
+          data: {
+            status: 'active',
+            currentPeriodEnd: this.nextPeriodEnd(sub.plan.interval, sub.currentPeriodEnd ?? now),
+            billingLockKey: null,
+          },
         })
         results.push({ organizationId: sub.organizationId, ok: true })
       } catch (e: any) {
-        await this.prisma.subscription.update({ where: { organizationId: sub.organizationId }, data: { status: 'past_due' } })
+        await this.prisma.subscription.updateMany({
+          where: { id: sub.id },
+          data: { status: 'past_due', billingLockKey: null },
+        })
         results.push({ organizationId: sub.organizationId, ok: false, error: e?.message })
       }
     }
@@ -306,7 +314,6 @@ export class BillingService {
     const gateway = this.factory.build(config)
     const evt = gateway.verifyAndParseWebhook({ rawBody, headers })
 
-    // Idempotency: skip if we've already stored this event id.
     const dedupeId = evt.id || `${provider}:${Date.now()}`
     const existing = await this.prisma.gatewayEvent.findUnique({
       where: { provider_eventId: { provider, eventId: dedupeId } },
@@ -330,7 +337,6 @@ export class BillingService {
     const data = evt.data ?? {}
     switch (evt.type) {
       case 'setup_intent.succeeded': {
-        // Card saved → attach payment method to the tenant's BillingCustomer.
         const organizationId = data.metadata?.organizationId ?? data.checkout_configuration?.metadata?.organizationId
         const pm = data.payment_method ?? {}
         const memberId = data.member?.id ?? data.member_id
@@ -380,7 +386,7 @@ export class BillingService {
   // ── Helpers ────────────────────────────────────────────────────────
   private computeTaxCents(subtotalCents: number, config: PaymentGatewayConfig): number {
     if (!config.taxEnabled || config.taxPercent <= 0) return 0
-    if (config.taxInclusive) return 0 // tax already inside the price
+    if (config.taxInclusive) return 0
     return Math.round((subtotalCents * config.taxPercent) / 100)
   }
 
@@ -392,11 +398,45 @@ export class BillingService {
     return items
   }
 
+  /**
+   * Advance a subscription period by one interval, clipping overflow dates to
+   * the last day of the target month (e.g. Jan 31 + 1 month → Feb 28, not Mar 3).
+   */
   private nextPeriodEnd(interval: 'month' | 'year', from: Date = new Date()): Date {
     const d = new Date(from)
-    if (interval === 'year') d.setFullYear(d.getFullYear() + 1)
-    else d.setMonth(d.getMonth() + 1)
+    if (interval === 'year') {
+      d.setFullYear(d.getFullYear() + 1)
+    } else {
+      const targetMonth = (d.getMonth() + 1) % 12
+      d.setMonth(d.getMonth() + 1)
+      // If JS rolled past the target month (e.g. Jan 31 → Mar 3) clip to last day
+      if (d.getMonth() !== targetMonth) {
+        d.setDate(0) // day 0 of current month = last day of previous month
+      }
+    }
     return d
+  }
+
+  /**
+   * Validate and return a return URL, ensuring it shares the same origin as APP_URL.
+   * Throws BadRequestException for any URL that could redirect to an attacker's site.
+   */
+  private validatedReturnUrl(url: string): string {
+    const appUrl = (process.env.APP_URL ?? '').replace(/\/+$/, '')
+    if (!appUrl || !url.startsWith(appUrl)) {
+      throw new BadRequestException('Invalid return URL: origin does not match APP_URL')
+    }
+    return url
+  }
+
+  /**
+   * Guard against oversized payout destination payloads that could cause
+   * downstream truncation or injection issues.
+   */
+  private assertPayoutDestination(dest: { account: string }): void {
+    if (!dest?.account || dest.account.length > 1000) {
+      throw new BadRequestException('Payout destination account is invalid or exceeds maximum length')
+    }
   }
 
   private async getConfigRow(id: string): Promise<PaymentGatewayConfig> {
@@ -441,7 +481,6 @@ export class BillingService {
     })
   }
 
-  /** Strip secrets; expose safe metadata + webhook URL. */
   private publicConfig(r: PaymentGatewayConfig) {
     return {
       id: r.id, scope: r.scope, organizationId: r.organizationId, provider: r.provider,

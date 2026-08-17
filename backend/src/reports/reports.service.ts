@@ -30,7 +30,11 @@ function parseRange(args: { days?: number; from?: string; to?: string }): DateRa
   }
 
   const ms = Math.max(0, to.getTime() - from.getTime())
-  const days = Math.max(1, Math.ceil(ms / 86_400_000))
+  const computedDays = Math.max(1, Math.ceil(ms / 86_400_000))
+  // When caller passes an explicit `days` (no custom `from`), honour that count
+  // exactly so the bucket array length matches the request (avoids off-by-one
+  // caused by the partial-day between midnight `from` and the current time).
+  const days = (args.days && args.days > 0 && !args.from) ? args.days : computedDays
   return { from, to, days }
 }
 
@@ -364,12 +368,6 @@ export class ReportsService {
     return [...map.values()].sort((a, b) => b.revenue - a.revenue)
   }
 
-  /**
-   * Orders grouped by traffic source: paid vs organic, ad network (Meta /
-   * Google / TikTok …) and utm_source. Orders with no captured signal fall
-   * into the 'direct' bucket. This is what powers the "where did this sale come
-   * from" breakdown so orders no longer all show as Direct.
-   */
   async bySource(
     organizationId: string,
     rangeInput: { days?: number; from?: string; to?: string } = {},

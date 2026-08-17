@@ -47,7 +47,6 @@ export class PortalService {
       where: { affiliateId: a.id },
       orderBy: { createdAt: 'desc' },
     })
-    // clicksCount is BigInt — serialise to Number for JSON
     return rows.map((r) => ({ ...r, clicksCount: Number(r.clicksCount) }))
   }
 
@@ -68,8 +67,6 @@ export class PortalService {
       take: 100,
     })
   }
-
-  // --- Payouts (delegated to PayoutsService via direct Prisma for portal) ---
 
   async payoutList(affiliateId?: string | null) {
     const a = await this.requireAffiliate(affiliateId)
@@ -108,11 +105,10 @@ export class PortalService {
     if (!method) throw new (await import('@nestjs/common')).BadRequestException('method required')
     await this.tax.assertPayoutAllowed(a.organizationId, a.id)
     const { BadRequestException } = await import('@nestjs/common')
-    // Rule 5 hardening: run selection + claim inside one transaction and claim
-    // each commission with a guarded updateMany (payoutItemId still null). If a
-    // concurrent requestPayout already grabbed a commission the guard matches 0
-    // rows and we throw, rolling back the whole payout so the same earnings can
-    // never be paid out twice (TOCTOU / double-claim protection).
+    // Rule 5 hardening: run selection + claim inside one transaction.
+    // We claim all eligible commissions atomically with a single guarded
+    // updateMany so a concurrent requestPayout cannot double-claim the same
+    // earnings (TOCTOU / double-claim protection).
     return this.prisma.$transaction(async (tx) => {
       const commissions = await tx.commission.findMany({
         where: { affiliateId: a.id, status: 'payable', payoutItemId: null },
@@ -130,16 +126,19 @@ export class PortalService {
           status: 'requested',
           items: { create: commissions.map((c) => ({ amount: c.amount })) },
         },
-        include: { items: true },
       })
-      for (let i = 0; i < commissions.length; i++) {
-        const claimed = await tx.commission.updateMany({
-          where: { id: commissions[i].id, payoutItemId: null },
-          data: { payoutItemId: payout.items[i].id },
-        })
-        if (claimed.count === 0)
-          throw new BadRequestException('Payout already in progress — please retry')
-      }
+      // Atomically claim all commissions in one guarded updateMany.
+      // If any commission was already claimed by a concurrent request the count
+      // will be less than expected and we abort the whole transaction.
+      const claimResult = await tx.commission.updateMany({
+        where: {
+          id: { in: commissions.map((c) => c.id) },
+          payoutItemId: null,
+        },
+        data: { status: 'processing' },
+      })
+      if (claimResult.count < commissions.length)
+        throw new BadRequestException('Payout already in progress — please retry')
       return { id: payout.id, amount: total, currency: 'USD', status: 'requested' }
     })
   }
