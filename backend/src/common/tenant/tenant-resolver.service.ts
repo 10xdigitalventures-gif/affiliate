@@ -10,7 +10,7 @@ import { PrismaService } from '../../prisma/prisma.service'
  */
 export type TenantHint = {
   orgSlug?: string | null
-  hostname?: string | null
+  hostname?: string | string[] | null
 }
 
 export type ResolvedTenant = {
@@ -22,11 +22,15 @@ export type ResolvedTenant = {
 /**
  * Apex domains the platform itself serves. A host of `acme.app.example.com`
  * with `TENANT_ROOT_DOMAINS=app.example.com` resolves to the org slug `acme`.
+ * Read at resolution time so tests and validated runtime configuration use the
+ * current value rather than a value captured during module import.
  */
-const ROOT_DOMAINS = (process.env.TENANT_ROOT_DOMAINS || '')
-  .split(',')
-  .map((d) => d.trim().toLowerCase().replace(/^\.+|\.+$/g, ''))
-  .filter(Boolean)
+function rootDomains(): string[] {
+  return (process.env.TENANT_ROOT_DOMAINS || '')
+    .split(',')
+    .map((d) => d.trim().toLowerCase().replace(/^\.+|\.+$/g, ''))
+    .filter(Boolean)
+}
 
 /** Subdomains that belong to the platform, never to a tenant. */
 const RESERVED_SUBDOMAINS = new Set([
@@ -60,9 +64,11 @@ export class TenantResolverService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** Strip port, proxy list and casing from a Host / X-Forwarded-Host value. */
-  static normalizeHostname(raw?: string | null): string | null {
+  static normalizeHostname(raw?: string | string[] | null): string | null {
     if (!raw) return null
-    const host = raw.split(',')[0].trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '')
+    const value = Array.isArray(raw) ? raw[0] : raw
+    if (!value) return null
+    const host = value.split(',')[0].trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '')
     return host || null
   }
 
@@ -74,7 +80,7 @@ export class TenantResolverService {
 
   /** Extract a tenant slug from `<slug>.<root-domain>`, if configured. */
   private subdomainSlug(hostname: string): string | null {
-    for (const root of ROOT_DOMAINS) {
+    for (const root of rootDomains()) {
       if (!hostname.endsWith('.' + root)) continue
       const label = hostname.slice(0, -(root.length + 1))
       if (label.includes('.')) continue // only a single leading label
