@@ -13,6 +13,12 @@ export type AuthUser = import('./api').AuthUser & {
 
 export const Auth = {
   ...BaseAuth,
+  me: () => api<AuthUser & {
+    status: string
+    emailVerifiedAt: string | null
+    twoFactorEnabled: boolean
+    isSuperAdmin: boolean
+  }>('/auth/me'),
   forgotPassword: (email: string, orgSlug?: string) =>
     api<{ ok: boolean }>('/auth/forgot-password', {
       method: 'POST',
@@ -24,8 +30,7 @@ export const Auth = {
     currentPassword?: string
     phoneNumber?: string | null
     avatarUrl?: string | null
-  }) =>
-    api<AuthUser>('/auth/me', { method: 'PATCH', body: JSON.stringify(dto) }),
+  }) => api<AuthUser>('/auth/me', { method: 'PATCH', body: JSON.stringify(dto) }),
 }
 
 export type TeamPermission = {

@@ -28,8 +28,6 @@ export class TeamService {
         id: true,
         email: true,
         fullName: true,
-        phoneNumber: true,
-        avatarUrl: true,
         status: true,
         isSuperAdmin: true,
         lastLoginAt: true,
@@ -51,8 +49,6 @@ export class TeamService {
       where: { OR: [{ organizationId }, { organizationId: null }] },
       include: {
         permissions: { include: { permission: true } },
-        // System roles are shared definitions. Filter their relation counts so
-        // a tenant cannot infer how many users/invites exist in other tenants.
         _count: {
           select: {
             users: { where: { user: { organizationId } } },
@@ -232,8 +228,6 @@ export class TeamService {
       if (dto.status) {
         await tx.user.update({ where: { id: memberId }, data: { status: dto.status } })
       }
-      // Existing access JWTs are short-lived, and the strategy reloads live roles.
-      // Refresh-token revocation forces a fresh login for any role/status change.
       await tx.refreshToken.updateMany({
         where: { userId: memberId, revokedAt: null },
         data: { revokedAt: new Date() },
@@ -299,8 +293,6 @@ export class TeamService {
         id: true,
         email: true,
         fullName: true,
-        phoneNumber: true,
-        avatarUrl: true,
         status: true,
         isSuperAdmin: true,
         lastLoginAt: true,
