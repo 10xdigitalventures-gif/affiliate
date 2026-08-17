@@ -258,6 +258,10 @@ export class BillingService {
    * guarded by `billingLockToken IS NULL`. If another worker already claimed it
    * (count === 0), we skip with `{ ok: true, skipped: true }` so the same
    * subscription is never double-charged across parallel workers.
+   *
+   * Note: `billingLockToken` is not yet in the Prisma schema; we cast the
+   * subscription model accessor to `any` so TypeScript does not block compilation
+   * while the column migration is pending.
    */
   async runBillingCycle(now = new Date()) {
     const due = await this.prisma.subscription.findMany({
@@ -268,14 +272,17 @@ export class BillingService {
       include: { plan: true },
     })
     const results: Array<{ organizationId: string; ok: boolean; skipped?: boolean; error?: string }> = []
+    // Cast to `any` so we can pass `billingLockToken` which is not yet in the
+    // generated Prisma types (schema migration pending).
+    const subOps: any = this.prisma.subscription
     for (const sub of due) {
       const periodEnd = sub.currentPeriodEnd ?? now
       // Deterministic, stable key: identifies this exact billing cycle instance.
       const lockKey = `subscription:${sub.id}:${periodEnd.toISOString()}`
-      // Atomically claim the subscription. count === 0 means already claimed.
-      const claimed = await this.prisma.subscription.updateMany({
-        where: { id: sub.id, ...({ billingLockToken: null } as any) },
-        data: { ...({ billingLockToken: lockKey } as any) },
+      // Atomically claim the subscription. count === 0 means already claimed by another worker.
+      const claimed = await subOps.updateMany({
+        where: { id: sub.id, billingLockToken: null },
+        data: { billingLockToken: lockKey },
       })
       if (claimed.count === 0) {
         results.push({ organizationId: sub.organizationId, ok: true, skipped: true })
@@ -298,19 +305,19 @@ export class BillingService {
             },
           )
         }
-        await this.prisma.subscription.updateMany({
+        await subOps.updateMany({
           where: { id: sub.id },
           data: {
             status: 'active',
             currentPeriodEnd: this.nextPeriodEnd(sub.plan.interval, periodEnd),
-            ...({ billingLockToken: null } as any),
+            billingLockToken: null,
           },
         })
         results.push({ organizationId: sub.organizationId, ok: true })
       } catch (e: any) {
-        await this.prisma.subscription.updateMany({
+        await subOps.updateMany({
           where: { id: sub.id },
-          data: { status: 'past_due', ...({ billingLockToken: null } as any) },
+          data: { status: 'past_due', billingLockToken: null },
         })
         results.push({ organizationId: sub.organizationId, ok: false, error: e?.message })
       }
@@ -442,7 +449,7 @@ export class BillingService {
     } else {
       const targetMonth = (d.getMonth() + 1) % 12
       d.setMonth(d.getMonth() + 1)
-      // Clip overflow: JS rolls Jan 31 → Mar 3, so we snap back to Feb 28
+      // Clip overflow: JS rolls Jan 31 → Mar 3, snap back to Feb 28
       if (d.getMonth() !== targetMonth) {
         d.setDate(0) // day 0 of current month = last day of previous month
       }
