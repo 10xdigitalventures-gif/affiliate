@@ -2,10 +2,11 @@ import { Module } from '@nestjs/common'
 import { PortalController } from './portal.controller'
 import { PortalService } from './portal.service'
 import { PayoutsModule } from '../payouts/payouts.module'
-import { EntitlementsModule } from '../entitlements/entitlements.module'
+import { TaxModule } from '../tax/tax.module'
 
+// EntitlementsModule is @Global() — no need to import it here.
 @Module({
-  imports: [PayoutsModule, EntitlementsModule],
+  imports: [PayoutsModule, TaxModule],
   controllers: [PortalController],
   providers: [PortalService],
 })

@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Injectable, Optional } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
 import { PayoutsService } from '../payouts/payouts.service'
 import { EntitlementsService } from '../entitlements/entitlements.service'
@@ -9,8 +9,8 @@ import { EntitlementsService } from '../entitlements/entitlements.service'
  *
  * Constructor args:
  *   prisma           — data layer
- *   payoutsService   — handles the actual payout creation & business logic
- *   _linksService    — reserved for future link-management delegation (unused, inject as optional)
+ *   payoutsService   — handles payout creation & business logic
+ *   _linksService    — reserved for future link-management delegation
  *   entitlements     — plan entitlement checks (feature flags + numeric limits)
  */
 @Injectable()
@@ -18,7 +18,7 @@ export class PortalService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly payoutsService: PayoutsService,
-    private readonly _linksService: unknown,
+    @Optional() private readonly _linksService: object | null,
     private readonly entitlements: EntitlementsService,
   ) {}
 
@@ -102,10 +102,7 @@ export class PortalService {
 
   async addPayoutMethod(affiliateId?: string | null, method?: string) {
     const a = await this.requireAffiliate(affiliateId)
-    if (!method) {
-      const { BadRequestException } = await import('@nestjs/common')
-      throw new BadRequestException('method required')
-    }
+    if (!method) throw new BadRequestException('method required')
     return this.payoutsService.addPayoutMethod(a.id, method)
   }
 
@@ -119,16 +116,12 @@ export class PortalService {
    *
    * Enforces the monthly payout-count limit from the affiliate's organisation plan:
    *   - -1  => unlimited (skip the count check)
-   *   - ≥ 0 => hard cap; throws ForbiddenException when reached
+   *   - >= 0 => hard cap; throws ForbiddenException when reached
    */
   async requestPayout(affiliateId?: string | null, method?: string, currency = 'USD') {
     const a = await this.requireAffiliate(affiliateId)
-    if (!method) {
-      const { BadRequestException } = await import('@nestjs/common')
-      throw new BadRequestException('method required')
-    }
+    if (!method) throw new BadRequestException('method required')
 
-    // Check the plan's monthly payout limit.
     const limit = await this.entitlements.getLimit(a.organizationId, 'payouts_per_month' as any)
     if (limit !== -1) {
       const used = await this.prisma.payout.count({ where: { affiliateId: a.id } })
