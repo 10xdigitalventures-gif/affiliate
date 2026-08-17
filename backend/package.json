@@ -10,7 +10,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "lint": "eslint \"src/**/*.ts\" --fix",
+    "lint": "tsc --noEmit --pretty false",
     "test": "jest"
   },
   "dependencies": {

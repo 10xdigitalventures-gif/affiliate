@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: 'standalone',
   // Proxy /api/v1/* to the backend so public pages (apply, embed) can use
   // same-origin relative fetches. Override the target with API_PROXY_URL.
   async rewrites() {
