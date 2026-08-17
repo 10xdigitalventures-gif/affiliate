@@ -1222,3 +1222,50 @@ export const TenantBilling = {
   createPayout: (dto: { configId: string; amountCents: number; currency?: string; destination: Record<string, unknown>; reference?: string; purpose?: string }) =>
     api<{ id: string; status: string; provider: GatewayProviderKey }>('/tenant-billing/payouts', { method: 'POST', body: JSON.stringify(dto) }),
 }
+
+// ---- Team (workspace members, roles, permissions, invitations) ----
+export type TeamPermission = {
+  id: string
+  key: string
+}
+
+export type TeamRole = {
+  id: string
+  name: string
+  organizationId: string | null
+  isSystem: boolean
+  permissions: Array<{ permission: TeamPermission }>
+  _count?: { users: number }
+}
+
+export type TeamMember = {
+  id: string
+  email: string
+  fullName: string | null
+  status: string
+  isSuperAdmin: boolean
+  lastLoginAt: string | null
+  roles: Array<{ role: { id: string; name: string } }>
+}
+
+export type TeamInvitation = {
+  id: string
+  email: string
+  expiresAt: string
+  role?: { name: string } | null
+}
+
+export const Team = {
+  members: () => api<TeamMember[]>('/team/members'),
+  roles: () => api<TeamRole[]>('/team/roles'),
+  permissions: () => api<TeamPermission[]>('/team/permissions'),
+  invitations: () => api<TeamInvitation[]>('/team/invitations'),
+  createRole: (name: string, permissions: string[]) =>
+    api<TeamRole>('/team/roles', { method: 'POST', body: JSON.stringify({ name, permissions }) }),
+  updateMember: (memberId: string, body: { roleIds?: string[]; status?: string }) =>
+    api<TeamMember>(`/team/members/${memberId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  revokeInvitation: (invitationId: string) =>
+    api(`/team/invitations/${invitationId}`, { method: 'DELETE' }),
+  deleteRole: (roleId: string) =>
+    api(`/team/roles/${roleId}`, { method: 'DELETE' }),
+}
