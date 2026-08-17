@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { LayoutDashboard, Link2, ShoppingCart, Wallet, Banknote, FileText } from 'lucide-react'
 
-const NAV = [
+export const PORTAL_NAV = [
   { href: '/portal', label: 'Overview', icon: LayoutDashboard },
   { href: '/portal/links', label: 'My links', icon: Link2 },
   { href: '/portal/orders', label: 'Orders', icon: ShoppingCart },
@@ -21,7 +21,7 @@ export function PortalSidebar() {
         <span className="font-semibold text-sm">Partner portal</span>
       </div>
       <nav className="flex-1 p-1.5 space-y-0.5">
-        {NAV.map(({ href, label, icon: Icon }) => {
+        {PORTAL_NAV.map(({ href, label, icon: Icon }) => {
           const active = pathname === href
           return (
             <Link

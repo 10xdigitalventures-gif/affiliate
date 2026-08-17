@@ -10,7 +10,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "lint": "tsc --noEmit --pretty false",
+    "lint": "tsc -p tsconfig.build.json --noEmit --pretty false",
     "test": "jest"
   },
   "dependencies": {
