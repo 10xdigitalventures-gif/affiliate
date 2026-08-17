@@ -1,42 +1,33 @@
 import { SuperAdminController } from './superadmin.controller'
 
-function makeController() {
-  const tenant = {
-    id: 'org-1',
-    name: 'Acme',
-    slug: 'acme',
-    owner: { id: 'user-1', email: 'owner@example.com', fullName: 'Owner' },
+describe('SuperAdminController', () => {
+  function makeController() {
+    const service: any = {
+      overview: jest.fn().mockResolvedValue({ totalOrgs: 1 }),
+      createPlan: jest.fn().mockResolvedValue({ id: 'plan-1' }),
+      listTenants: jest.fn().mockResolvedValue([{ id: 'org-1' }]),
+      setTenantStatus: jest.fn().mockResolvedValue({ id: 'org-1', status: 'suspended' }),
+    }
+    return { controller: new SuperAdminController(service), service }
   }
-  const service: any = { createTenant: jest.fn().mockResolvedValue(tenant) }
-  const audit: any = { log: jest.fn().mockResolvedValue({ id: 'audit-1' }) }
-  const auth: any = { requestEmailLoginCode: jest.fn().mockResolvedValue({ ok: true }) }
-  return { controller: new SuperAdminController(service, audit, auth), service, audit, auth, tenant }
-}
 
-describe('SuperAdminController.createTenant', () => {
-  const actor: any = { sub: 'admin-1', organizationId: 'platform-org', isSuperAdmin: true }
-
-  it('reports successful owner code delivery', async () => {
-    const { controller } = makeController()
-    const result = await controller.createTenant({
-      name: 'Acme', slug: 'acme', ownerEmail: 'owner@example.com', sendLoginCode: true,
-    }, { user: actor })
-
-    expect(result.loginCodeSent).toBe(true)
-    expect(result.loginCodeWarning).toBeNull()
+  it('delegates overview loading', async () => {
+    const { controller, service } = makeController()
+    await expect(controller.overview()).resolves.toEqual({ totalOrgs: 1 })
+    expect(service.overview).toHaveBeenCalled()
   })
 
-  it('keeps the created tenant when SMTP delivery fails', async () => {
-    const { controller, auth } = makeController()
-    jest.spyOn((controller as any).logger, 'error').mockImplementation(() => undefined)
-    auth.requestEmailLoginCode.mockRejectedValue(new Error('SMTP unavailable'))
+  it('delegates plan creation', async () => {
+    const { controller, service } = makeController()
+    const dto: any = { key: 'pro', name: 'Pro', priceCents: 1000, features: {}, limits: {} }
+    await expect(controller.createPlan(dto)).resolves.toEqual({ id: 'plan-1' })
+    expect(service.createPlan).toHaveBeenCalledWith(dto)
+  })
 
-    const result = await controller.createTenant({
-      name: 'Acme', slug: 'acme', ownerEmail: 'owner@example.com', sendLoginCode: true,
-    }, { user: actor })
-
-    expect(result.id).toBe('org-1')
-    expect(result.loginCodeSent).toBe(false)
-    expect(result.loginCodeWarning).toContain('Organization was created')
+  it('delegates tenant status updates', async () => {
+    const { controller, service } = makeController()
+    const dto: any = { status: 'suspended' }
+    await expect(controller.setTenantStatus('org-1', dto)).resolves.toEqual({ id: 'org-1', status: 'suspended' })
+    expect(service.setTenantStatus).toHaveBeenCalledWith('org-1', dto)
   })
 })

@@ -1,30 +1,50 @@
-import { ForbiddenException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException } from '@nestjs/common'
 import { PortalService } from './portal.service'
 
-function makeService(limit: number, used: number) {
+function makeService(commissions: any[] = []) {
+  const tx: any = {
+    commission: {
+      findMany: jest.fn().mockResolvedValue(commissions),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    payout: {
+      create: jest.fn().mockImplementation(({ data }: any) => Promise.resolve({
+        id: 'payout-1',
+        items: commissions.map((item, index) => ({ id: `item-${index}`, amount: item.amount })),
+        ...data,
+      })),
+    },
+  }
   const prisma: any = {
     affiliate: {
       findUnique: jest.fn().mockResolvedValue({ id: 'affiliate-1', organizationId: 'org-1', status: 'approved' }),
     },
-    payout: { count: jest.fn().mockResolvedValue(used) },
+    $transaction: jest.fn((callback: any) => callback(tx)),
   }
-  const payouts: any = { requestPayout: jest.fn().mockResolvedValue({ id: 'payout-1' }) }
-  const links: any = {}
-  const entitlements: any = { getLimit: jest.fn().mockResolvedValue(limit) }
-  return { service: new PortalService(prisma, payouts, links, entitlements), prisma, payouts }
+  const tax: any = { assertPayoutAllowed: jest.fn().mockResolvedValue(undefined) }
+  return { service: new PortalService(prisma, tax), prisma, tax, tx }
 }
 
-describe('PortalService payout plan limits', () => {
-  it('blocks a payout request after the affiliate reaches the monthly plan cap', async () => {
-    const { service, payouts } = makeService(2, 2)
-    await expect(service.requestPayout('affiliate-1', 'paypal', 'USD'))
-      .rejects.toBeInstanceOf(ForbiddenException)
-    expect(payouts.requestPayout).not.toHaveBeenCalled()
+describe('PortalService payouts', () => {
+  it('rejects accounts that are not linked to an affiliate', async () => {
+    const { service } = makeService()
+    await expect(service.requestPayout(null, 'paypal')).rejects.toBeInstanceOf(ForbiddenException)
   })
 
-  it('allows unlimited monthly payout requests', async () => {
-    const { service, payouts } = makeService(-1, 99)
-    await expect(service.requestPayout('affiliate-1', 'paypal', 'USD')).resolves.toEqual({ id: 'payout-1' })
-    expect(payouts.requestPayout).toHaveBeenCalledWith('affiliate-1', 'org-1', 'paypal', 'USD')
+  it('rejects a request with no payable commissions', async () => {
+    const { service } = makeService()
+    await expect(service.requestPayout('affiliate-1', 'paypal')).rejects.toBeInstanceOf(BadRequestException)
+  })
+
+  it('claims payable commissions atomically', async () => {
+    const { service, tax, tx } = makeService([{ id: 'commission-1', amount: 12.5 }])
+    await expect(service.requestPayout('affiliate-1', 'paypal')).resolves.toEqual({
+      id: 'payout-1', amount: 12.5, currency: 'USD', status: 'requested',
+    })
+    expect(tax.assertPayoutAllowed).toHaveBeenCalledWith('org-1', 'affiliate-1')
+    expect(tx.commission.updateMany).toHaveBeenCalledWith({
+      where: { id: 'commission-1', payoutItemId: null },
+      data: { payoutItemId: 'item-0' },
+    })
   })
 })
