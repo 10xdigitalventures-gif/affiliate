@@ -1,11 +1,26 @@
 import { ForbiddenException, Injectable } from '@nestjs/common'
 import { PrismaService } from '../prisma/prisma.service'
-import { TaxService } from '../tax/tax.service'
+import { PayoutsService } from '../payouts/payouts.service'
+import { EntitlementsService } from '../entitlements/entitlements.service'
 
-/** Affiliate self-service. All queries scoped to the affiliate on the JWT. */
+/**
+ * Affiliate self-service portal.
+ * All queries are scoped to the affiliate identified on the JWT.
+ *
+ * Constructor args:
+ *   prisma           — data layer
+ *   payoutsService   — handles the actual payout creation & business logic
+ *   _linksService    — reserved for future link-management delegation (unused, inject as optional)
+ *   entitlements     — plan entitlement checks (feature flags + numeric limits)
+ */
 @Injectable()
 export class PortalService {
-  constructor(private readonly prisma: PrismaService, private readonly tax: TaxService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly payoutsService: PayoutsService,
+    private readonly _linksService: unknown,
+    private readonly entitlements: EntitlementsService,
+  ) {}
 
   private async requireAffiliate(affiliateId?: string | null) {
     if (!affiliateId) throw new ForbiddenException('This account is not linked to an affiliate')
@@ -87,59 +102,43 @@ export class PortalService {
 
   async addPayoutMethod(affiliateId?: string | null, method?: string) {
     const a = await this.requireAffiliate(affiliateId)
-    if (!method) throw new (await import('@nestjs/common')).BadRequestException('method required')
-    return this.prisma.payoutMethodRecord.create({
-      data: { affiliateId: a.id, method: method as any, isDefault: false },
-      select: { id: true, method: true, isDefault: true },
-    })
+    if (!method) {
+      const { BadRequestException } = await import('@nestjs/common')
+      throw new BadRequestException('method required')
+    }
+    return this.payoutsService.addPayoutMethod(a.id, method)
   }
 
   async deletePayoutMethod(affiliateId?: string | null, recordId?: string) {
     const a = await this.requireAffiliate(affiliateId)
-    await this.prisma.payoutMethodRecord.deleteMany({ where: { id: recordId, affiliateId: a.id } })
-    return { deleted: true }
+    return this.payoutsService.deletePayoutMethod(a.id, recordId!)
   }
 
-  async requestPayout(affiliateId?: string | null, method?: string) {
+  /**
+   * Request a payout for all payable commissions.
+   *
+   * Enforces the monthly payout-count limit from the affiliate's organisation plan:
+   *   - -1  => unlimited (skip the count check)
+   *   - ≥ 0 => hard cap; throws ForbiddenException when reached
+   */
+  async requestPayout(affiliateId?: string | null, method?: string, currency = 'USD') {
     const a = await this.requireAffiliate(affiliateId)
-    if (!method) throw new (await import('@nestjs/common')).BadRequestException('method required')
-    await this.tax.assertPayoutAllowed(a.organizationId, a.id)
-    const { BadRequestException } = await import('@nestjs/common')
-    // Rule 5 hardening: run selection + claim inside one transaction.
-    // We claim all eligible commissions atomically with a single guarded
-    // updateMany so a concurrent requestPayout cannot double-claim the same
-    // earnings (TOCTOU / double-claim protection).
-    return this.prisma.$transaction(async (tx) => {
-      const commissions = await tx.commission.findMany({
-        where: { affiliateId: a.id, status: 'payable', payoutItemId: null },
-      })
-      if (commissions.length === 0)
-        throw new BadRequestException('No payable commissions available')
-      const total = commissions.reduce((s, c) => s + Number(c.amount), 0)
-      const payout = await tx.payout.create({
-        data: {
-          organizationId: a.organizationId,
-          affiliateId: a.id,
-          amount: total,
-          currency: 'USD',
-          method: method as any,
-          status: 'requested',
-          items: { create: commissions.map((c) => ({ amount: c.amount })) },
-        },
-      })
-      // Atomically claim all commissions in one guarded updateMany.
-      // If any commission was already claimed by a concurrent request the count
-      // will be less than expected and we abort the whole transaction.
-      const claimResult = await tx.commission.updateMany({
-        where: {
-          id: { in: commissions.map((c) => c.id) },
-          payoutItemId: null,
-        },
-        data: { status: 'processing' },
-      })
-      if (claimResult.count < commissions.length)
-        throw new BadRequestException('Payout already in progress — please retry')
-      return { id: payout.id, amount: total, currency: 'USD', status: 'requested' }
-    })
+    if (!method) {
+      const { BadRequestException } = await import('@nestjs/common')
+      throw new BadRequestException('method required')
+    }
+
+    // Check the plan's monthly payout limit.
+    const limit = await this.entitlements.getLimit(a.organizationId, 'payouts_per_month' as any)
+    if (limit !== -1) {
+      const used = await this.prisma.payout.count({ where: { affiliateId: a.id } })
+      if (used >= limit) {
+        throw new ForbiddenException(
+          'Monthly payout limit reached for your current plan. Upgrade to request more payouts.',
+        )
+      }
+    }
+
+    return this.payoutsService.requestPayout(a.id, a.organizationId, method, currency)
   }
 }

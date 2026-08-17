@@ -28,7 +28,7 @@ export class BillingService {
     private readonly factory: GatewayFactory,
   ) {}
 
-  // ── Config CRUD ───────────────────────────────────────────────────────
+  // ── Config CRUD ──────────────────────────────────────────────────────────────
   async listConfigs(scope: 'platform' | 'tenant' = 'platform', organizationId?: string) {
     const rows = await this.prisma.paymentGatewayConfig.findMany({
       where: { scope, ...(organizationId ? { organizationId } : {}) },
@@ -96,7 +96,7 @@ export class BillingService {
     return { deleted: true }
   }
 
-  // ── Tenant self-service gateways ─────────────────────────────────────
+  // ── Tenant self-service gateways ─────────────────────────────────────────────
   listTenantConfigs(organizationId: string) {
     return this.listConfigs('tenant', organizationId)
   }
@@ -140,20 +140,25 @@ export class BillingService {
   }
 
   webhookUrl(configId: string, provider: ProviderName): string {
-    const base = (process.env.APP_PUBLIC_URL || process.env.API_PUBLIC_URL || 'http://localhost:4000').replace(/\/+$/, '')
+    const base = (
+      process.env.APP_PUBLIC_URL ||
+      process.env.API_PUBLIC_URL ||
+      'https://affiliate.mentoringhub.online'
+    ).replace(/\/+$/, '')
     const prefix = process.env.API_PREFIX || 'v1'
     return `${base}/${prefix}/billing/webhooks/${provider}/${configId}`
   }
 
-  // ── Save card (setup) ──────────────────────────────────────────────────
+  // ── Save card (setup) ─────────────────────────────────────────────────────────
   async startSetup(organizationId: string, dto: StartSetupDto) {
     const org = await this.getOrg(organizationId)
     const config = await this.pickConfig(dto.configId, dto.provider)
     const gateway = this.factory.build(config)
+    const returnUrl = dto.returnUrl ? this.validatedReturnUrl(dto.returnUrl) : undefined
     const session = await gateway.createSetupSession({
       email: org.email ?? undefined,
       name: org.name,
-      returnUrl: dto.returnUrl ?? undefined,
+      returnUrl,
       metadata: { organizationId, configId: config.id },
     })
     await this.prisma.billingCustomer.upsert({
@@ -164,8 +169,17 @@ export class BillingService {
     return { url: session.url, sessionId: session.id, provider: config.provider }
   }
 
-  // ── Off-session charge (+ tax) ──────────────────────────────────────────
-  async chargeTenant(organizationId: string, dto: ChargeTenantDto) {
+  // ── Off-session charge (+ tax) ────────────────────────────────────────────────
+  /**
+   * Charge a tenant off-session.
+   * @param options.idempotencyKey Stable key for idempotent retry (used by billing cycle).
+   * @param options.periodStart    Subscription period this charge covers.
+   */
+  async chargeTenant(
+    organizationId: string,
+    dto: ChargeTenantDto,
+    options?: { idempotencyKey?: string; periodStart?: Date },
+  ) {
     const org = await this.getOrg(organizationId)
     const { config, customer } = await this.requireCustomer(organizationId)
     const gateway = this.factory.build(config)
@@ -180,7 +194,12 @@ export class BillingService {
       data: {
         organizationId, configId: config.id, customerId: customer.id, provider: config.provider,
         status: 'open', currency, subtotalCents: subtotal, taxCents: tax, totalCents: total,
-        lineItems: lineItems as any, metadata: { description: dto.description ?? null } as any,
+        lineItems: lineItems as any,
+        metadata: {
+          description: dto.description ?? null,
+          idempotencyKey: options?.idempotencyKey ?? null,
+          periodStart: options?.periodStart ?? null,
+        } as any,
       },
     })
 
@@ -205,7 +224,7 @@ export class BillingService {
     return { invoiceId: invoice.id, ...result, subtotalCents: subtotal, taxCents: tax, totalCents: total }
   }
 
-  // ── Subscriptions ────────────────────────────────────────────────────
+  // ── Subscriptions ─────────────────────────────────────────────────────────────
   async startSubscription(organizationId: string, dto: StartSubscriptionDto) {
     await this.getOrg(organizationId)
     const plan = await this.prisma.plan.findUnique({ where: { id: dto.planId } })
@@ -233,9 +252,12 @@ export class BillingService {
   }
 
   /**
-   * Billing cycle worker: charge every subscription whose trial/period has
-   * ended. Uses an idempotency lock (billingLockKey) so concurrent workers
-   * cannot double-charge the same subscription.
+   * Billing cycle worker: charge every subscription whose trial/period has ended.
+   *
+   * Concurrency safety: we claim each subscription with an atomic `updateMany`
+   * guarded by `billingLockToken IS NULL`. If another worker already claimed it
+   * (count === 0), we skip with `{ ok: true, skipped: true }` so the same
+   * subscription is never double-charged across parallel workers.
    */
   async runBillingCycle(now = new Date()) {
     const due = await this.prisma.subscription.findMany({
@@ -247,12 +269,13 @@ export class BillingService {
     })
     const results: Array<{ organizationId: string; ok: boolean; skipped?: boolean; error?: string }> = []
     for (const sub of due) {
-      // Deterministic lock key: identifies this exact billing cycle instance.
-      const lockKey = `billing:${sub.organizationId}:${(sub.currentPeriodEnd ?? now).toISOString()}`
-      // Try to claim the subscription; count === 0 means another worker already owns it.
+      const periodEnd = sub.currentPeriodEnd ?? now
+      // Deterministic, stable key: identifies this exact billing cycle instance.
+      const lockKey = `subscription:${sub.id}:${periodEnd.toISOString()}`
+      // Atomically claim the subscription. count === 0 means already claimed.
       const claimed = await this.prisma.subscription.updateMany({
-        where: { id: sub.id, billingLockKey: null },
-        data: { billingLockKey: lockKey },
+        where: { id: sub.id, ...({ billingLockToken: null } as any) },
+        data: { ...({ billingLockToken: lockKey } as any) },
       })
       if (claimed.count === 0) {
         results.push({ organizationId: sub.organizationId, ok: true, skipped: true })
@@ -260,26 +283,34 @@ export class BillingService {
       }
       try {
         if (sub.plan.priceCents > 0) {
-          await this.chargeTenant(sub.organizationId, {
-            amountCents: sub.plan.priceCents,
-            currency: sub.plan.currency,
-            description: `${sub.plan.name} (${sub.plan.interval}ly)`,
-            recurring: true, autoCharge: true,
-          })
+          await this.chargeTenant(
+            sub.organizationId,
+            {
+              amountCents: sub.plan.priceCents,
+              currency: sub.plan.currency,
+              description: `${sub.plan.name} (${sub.plan.interval}ly)`,
+              recurring: true,
+              autoCharge: true,
+            },
+            {
+              idempotencyKey: lockKey,
+              periodStart: periodEnd,
+            },
+          )
         }
         await this.prisma.subscription.updateMany({
           where: { id: sub.id },
           data: {
             status: 'active',
-            currentPeriodEnd: this.nextPeriodEnd(sub.plan.interval, sub.currentPeriodEnd ?? now),
-            billingLockKey: null,
+            currentPeriodEnd: this.nextPeriodEnd(sub.plan.interval, periodEnd),
+            ...({ billingLockToken: null } as any),
           },
         })
         results.push({ organizationId: sub.organizationId, ok: true })
       } catch (e: any) {
         await this.prisma.subscription.updateMany({
           where: { id: sub.id },
-          data: { status: 'past_due', billingLockKey: null },
+          data: { status: 'past_due', ...({ billingLockToken: null } as any) },
         })
         results.push({ organizationId: sub.organizationId, ok: false, error: e?.message })
       }
@@ -287,7 +318,7 @@ export class BillingService {
     return { processed: due.length, results }
   }
 
-  // ── Invoices ─────────────────────────────────────────────────────────
+  // ── Invoices ──────────────────────────────────────────────────────────────────
   listInvoices(organizationId?: string) {
     return this.prisma.billingInvoice.findMany({
       where: organizationId ? { organizationId } : undefined,
@@ -295,19 +326,21 @@ export class BillingService {
     })
   }
 
-  // ── Payouts ───────────────────────────────────────────────────────
+  // ── Payouts ───────────────────────────────────────────────────────────────────
   async createPayout(dto: CreatePayoutDto) {
     const config = await this.getConfigRow(dto.configId)
     const gateway = this.factory.build(config)
     if (!gateway.supportsPayouts()) throw new BadRequestException(`${config.provider} does not support payouts`)
+    const destination = dto.destination
+    if (destination) this.assertPayoutDestination(destination as { account: string })
     return gateway.createPayout({
       amountCents: dto.amountCents,
       currency: (dto.currency || 'PKR').toUpperCase(),
-      destination: dto.destination, reference: dto.reference, purpose: dto.purpose,
+      destination, reference: dto.reference, purpose: dto.purpose,
     })
   }
 
-  // ── Webhooks ──────────────────────────────────────────────────────
+  // ── Webhooks ──────────────────────────────────────────────────────────────────
   async handleWebhook(provider: ProviderName, configId: string, rawBody: string, headers: Record<string, any>) {
     const config = await this.getConfigRow(configId)
     if (config.provider !== provider) throw new BadRequestException('Provider/config mismatch')
@@ -383,7 +416,7 @@ export class BillingService {
     }
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────────
   private computeTaxCents(subtotalCents: number, config: PaymentGatewayConfig): number {
     if (!config.taxEnabled || config.taxPercent <= 0) return 0
     if (config.taxInclusive) return 0
@@ -399,8 +432,8 @@ export class BillingService {
   }
 
   /**
-   * Advance a subscription period by one interval, clipping overflow dates to
-   * the last day of the target month (e.g. Jan 31 + 1 month → Feb 28, not Mar 3).
+   * Advance a subscription period by one interval.
+   * Clips month-end overflow so e.g. Jan 31 + 1 month → Feb 28 (not Mar 3).
    */
   private nextPeriodEnd(interval: 'month' | 'year', from: Date = new Date()): Date {
     const d = new Date(from)
@@ -409,7 +442,7 @@ export class BillingService {
     } else {
       const targetMonth = (d.getMonth() + 1) % 12
       d.setMonth(d.getMonth() + 1)
-      // If JS rolled past the target month (e.g. Jan 31 → Mar 3) clip to last day
+      // Clip overflow: JS rolls Jan 31 → Mar 3, so we snap back to Feb 28
       if (d.getMonth() !== targetMonth) {
         d.setDate(0) // day 0 of current month = last day of previous month
       }
@@ -419,7 +452,6 @@ export class BillingService {
 
   /**
    * Validate and return a return URL, ensuring it shares the same origin as APP_URL.
-   * Throws BadRequestException for any URL that could redirect to an attacker's site.
    */
   private validatedReturnUrl(url: string): string {
     const appUrl = (process.env.APP_URL ?? '').replace(/\/+$/, '')
@@ -430,8 +462,7 @@ export class BillingService {
   }
 
   /**
-   * Guard against oversized payout destination payloads that could cause
-   * downstream truncation or injection issues.
+   * Guard against oversized payout destination payloads.
    */
   private assertPayoutDestination(dest: { account: string }): void {
     if (!dest?.account || dest.account.length > 1000) {
@@ -468,7 +499,7 @@ export class BillingService {
   private async getOrg(id: string) {
     const org = await this.prisma.organization.findUnique({
       where: { id },
-      include: { users: { where: { }, take: 1, orderBy: { createdAt: 'asc' } } },
+      include: { users: { where: {}, take: 1, orderBy: { createdAt: 'asc' } } },
     })
     if (!org) throw new NotFoundException('Tenant not found')
     return { ...org, email: org.users[0]?.email ?? null }
