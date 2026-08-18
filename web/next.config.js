@@ -2,12 +2,6 @@
 const nextConfig = {
   reactStrictMode: true,
 
-  // Required for Cloudflare Pages (next-on-pages)
-  // Edge runtime compatibility
-  experimental: {
-    runtime: 'edge',
-  },
-
   // Proxy /api/v1/* to backend
   async rewrites() {
     const target = (process.env.API_PROXY_URL || 'https://apiaffiliate.10xcollab.com').replace(/\/$/, '')
