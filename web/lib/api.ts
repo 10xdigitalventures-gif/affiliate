@@ -1,7 +1,4 @@
 // Thin typed API client. Reads the JWT saved at login from sessionStorage.
-// sessionStorage is cleared when the tab closes, reducing the XSS exposure
-// window compared with localStorage. Combine with a strict Content-Security-
-// Policy (see next.config.js) for defence-in-depth.
 const BASE =
   (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/v1').replace(/\/$/, '')
 
@@ -94,7 +91,6 @@ export const Auth = {
   },
 }
 
-// Login response is either full tokens or a 2FA challenge.
 export type LoginResult = AuthTokens | { twoFactorRequired: true; challenge: string }
 
 // ---- Two-factor authentication ----
@@ -197,7 +193,6 @@ export type OrderRow = {
   status: string
   refundAmount: string
   placedAt: string | null
-  // Traffic-source attribution (where the order came from)
   trafficChannel?: string | null
   adNetwork?: string | null
   utmSource?: string | null
@@ -243,7 +238,6 @@ export type ConnectStoreInput = {
   webhookSecret?: string
 }
 
-// ---- Shopify embedded (App Bridge session-token exchange) ----
 export const ShopifyApp = {
   tokenExchange: (sessionToken: string) =>
     api<AuthTokens>('/shopify/token-exchange', {
@@ -255,10 +249,6 @@ export const ShopifyApp = {
 export const Stores = {
   list: () => api<StoreRow[]>('/stores'),
   connect: (dto: ConnectStoreInput) => api<StoreRow>('/stores/connect', { method: 'POST', body: JSON.stringify(dto) }),
-  /**
-   * Shopify 1-click app install: returns the Shopify OAuth authorize URL for a
-   * shop domain (e.g. "my-shop.myshopify.com"). Redirect the browser to `url`.
-   */
   shopifyInstallUrl: (shop: string) =>
     api<{ url: string; configured: boolean }>(`/shopify/install-url${qs({ shop })}`),
 }
@@ -310,6 +300,7 @@ export const Catalog = {
   sync: (storeId: string, dto: SyncCatalogInput) =>
     api<SyncResult>(`/catalog/stores/${storeId}/sync`, { method: 'POST', body: JSON.stringify(dto) }),
 }
+
 // ---- Coupons ----
 export type CouponRow = {
   id: string
@@ -403,6 +394,7 @@ export const NotificationSettings = {
   update: (dto: NotificationSettingsData) =>
     api<NotificationSettingsData>('/settings/notifications', { method: 'PATCH', body: JSON.stringify(dto) }),
 }
+
 export const Commissions = {
   list: (status?: string) => api<Paged<CommissionRow>>(`/commissions${qs({ status })}`),
   approve: (id: string) => api(`/commissions/${id}/approve`, { method: 'POST' }),
@@ -410,7 +402,7 @@ export const Commissions = {
     api(`/commissions/${id}/reverse`, { method: 'POST', body: JSON.stringify({ reason }) }),
 }
 
-// ---- Commission rules (global / store / category / product / affiliate) ----
+// ---- Commission rules ----
 export type RuleScope = 'global' | 'store' | 'category' | 'product' | 'campaign' | 'affiliate'
 export type CommissionType = 'percentage' | 'fixed' | 'tiered' | 'recurring'
 export type CommissionRule = {
@@ -438,7 +430,7 @@ export const CommissionRules = {
   remove: (id: string) => api(`/commission-rules/${id}`, { method: 'DELETE' }),
 }
 
-// ---- Reports (admin analytics) ----
+// ---- Reports ----
 export type ReportRange = { days?: number; from?: string; to?: string }
 export type ReportSummary = {
   revenue: number
@@ -497,6 +489,14 @@ export type CategoryBreakdown = {
   revenue: number
   commissionAmount: number
 }
+export type SourceBreakdown = {
+  channel: string
+  adNetwork: string | null
+  source: string | null
+  orders: number
+  revenue: number
+  attributedOrders: number
+}
 
 function reportQs(range: ReportRange = {}, extra: Record<string, string | number | undefined> = {}) {
   const p = new URLSearchParams()
@@ -508,15 +508,6 @@ function reportQs(range: ReportRange = {}, extra: Record<string, string | number
   }
   const q = p.toString()
   return q ? `?${q}` : ''
-}
-
-export type SourceBreakdown = {
-  channel: string
-  adNetwork: string | null
-  source: string | null
-  orders: number
-  revenue: number
-  attributedOrders: number
 }
 
 export const Reports = {
@@ -536,7 +527,6 @@ export const Reports = {
     api<SourceBreakdown[]>(`/reports/by-source${reportQs(range)}`),
 }
 
-/** Fetch a CSV export with auth and trigger a browser download. */
 export async function downloadCsv(
   entity: 'commissions' | 'orders' | 'affiliates',
   range: ReportRange = {},
@@ -576,10 +566,19 @@ export type PortalLink = {
   clicksCount: number
   createdAt: string
 }
+export type PortalCoupon = {
+  id: string
+  code: string
+  status: 'active' | 'expired' | 'disabled'
+  expiresAt: string | null
+  store: { id: string; name: string; platform: string }
+  _count: { orders: number }
+}
 
 export const Portal = {
   summary: () => api<PortalSummary>('/portal/summary'),
   links: () => api<PortalLink[]>('/portal/links'),
+  coupons: () => api<PortalCoupon[]>('/portal/coupons'),
   orders: () => api<OrderRow[]>('/portal/orders'),
   commissions: () => api<CommissionRow[]>('/portal/commissions'),
   payouts: () => api<PayoutRow[]>('/portal/payouts'),
@@ -736,7 +735,6 @@ export type SignupSettingsUpdate = {
   accentColor?: string
   layout?: 'split' | 'centered'
   buttonText?: string
-  // Embed branding (independent design for the iframe embed)
   embedCustom?: boolean
   embedHeadline?: string
   embedSubheadline?: string
@@ -752,7 +750,7 @@ export const SignupSettings = {
     api<SignupSettingsData>('/settings/signup', { method: 'PATCH', body: JSON.stringify(dto) }),
 }
 
-// ---- Sub-affiliate (multi-tier) settings ----
+// ---- Sub-affiliate settings ----
 export type SubAffiliateSettingsData = {
   subAffiliateEnabled: boolean
   subAffiliateRate: number
@@ -877,7 +875,7 @@ export const AttributionSettings = {
     api<AttributionSettingsData>('/settings/attribution', { method: 'PATCH', body: JSON.stringify(dto) }),
 }
 
-// ---- Plans, entitlements & super-admin (enterprise layer) ----
+// ---- Plans, entitlements & super-admin ----
 export type Plan = {
   id: string
   key: string
@@ -1001,7 +999,7 @@ export const Domains = {
   trackingBase: () => api<TrackingBase>('/domains/tracking-base'),
 }
 
-// ---- Super-admin (platform owner console) ----
+// ---- Super-admin ----
 export type FeatureKey =
   | 'apiAccess' | 'webhooks' | 'fraudTools' | 'multiTierCommissions'
   | 'advancedReports' | 'bulkOperations' | 'branding' | 'customDomain' | 'prioritySupport'
@@ -1090,12 +1088,10 @@ export type UpdatePlanInput = Partial<Omit<CreatePlanInput, 'key'>> & { isArchiv
 
 export const SuperAdmin = {
   overview: () => api<AdminOverview>('/admin/overview'),
-  // plans
   plans: () => api<AdminPlan[]>('/admin/plans'),
   createPlan: (dto: CreatePlanInput) => api<AdminPlan>('/admin/plans', { method: 'POST', body: JSON.stringify(dto) }),
   updatePlan: (id: string, dto: UpdatePlanInput) => api<AdminPlan>(`/admin/plans/${id}`, { method: 'PATCH', body: JSON.stringify(dto) }),
   deletePlan: (id: string) => api<{ archived: boolean; deleted?: boolean }>(`/admin/plans/${id}`, { method: 'DELETE' }),
-  // tenants
   tenants: (search?: string) => api<AdminTenant[]>(`/admin/tenants${qs({ search })}`),
   tenant: (id: string) => api<AdminTenantDetail>(`/admin/tenants/${id}`),
   assignPlan: (id: string, dto: { planId: string; status?: string; seats?: number }) =>
@@ -1104,7 +1100,7 @@ export const SuperAdmin = {
     api(`/admin/tenants/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
 }
 
-// ---- Billing & Payment Gateways (super-admin) ----
+// ---- Billing & Payment Gateways ----
 export type GatewayProviderKey = 'whop' | 'swich'
 
 export type GatewayConfig = {
@@ -1160,7 +1156,6 @@ export type BillingInvoice = {
   createdAt: string
 }
 
-// Catalog for rendering the gateway picker / help text in the UI.
 export const GATEWAY_CATALOG: Array<{
   key: GatewayProviderKey
   name: string
@@ -1209,8 +1204,6 @@ export const Billing = {
   runCycle: () => api('/billing/run-cycle', { method: 'POST' }),
 }
 
-// Tenant-facing gateways: a merchant manages + uses their OWN Whop / Swich
-// accounts (scope = 'tenant'), e.g. to pay affiliate payouts through Swich.
 export const TenantBilling = {
   configs: () => api<GatewayConfig[]>('/tenant-billing/config'),
   getConfig: (id: string) => api<GatewayConfig>(`/tenant-billing/config/${id}`),
