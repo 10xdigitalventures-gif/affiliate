@@ -122,9 +122,10 @@ export class TeamService {
     if (name && name.toLowerCase() !== existing.name.toLowerCase()) {
       await this.assertRoleNameAvailable(organizationId, name, roleId)
     }
-    const permissions = dto.permissionKeys === undefined
-      ? null
-      : await this.resolvePermissions(dto.permissionKeys)
+    const permissions =
+      dto.permissionKeys === undefined
+        ? null
+        : await this.resolvePermissions(dto.permissionKeys)
 
     const role = await this.prisma.$transaction(async (tx) => {
       if (permissions) {
@@ -161,14 +162,21 @@ export class TeamService {
     return role
   }
 
-  async deleteRole(organizationId: string, actorUserId: string, roleId: string, ipAddress?: string) {
+  async deleteRole(
+    organizationId: string,
+    actorUserId: string,
+    roleId: string,
+    ipAddress?: string,
+  ) {
     const existing = await this.mutableRole(organizationId, roleId)
     const [members, invitations] = await Promise.all([
       this.prisma.userRole.count({ where: { roleId } }),
       this.prisma.invitation.count({ where: { roleId, acceptedAt: null } }),
     ])
     if (members > 0 || invitations > 0) {
-      throw new ConflictException('Remove this role from members and pending invitations before deleting it')
+      throw new ConflictException(
+        'Remove this role from members and pending invitations before deleting it',
+      )
     }
     await this.prisma.role.delete({ where: { id: roleId } })
     await this.audit.log({
@@ -191,7 +199,9 @@ export class TeamService {
     ipAddress?: string,
   ) {
     if (actorUserId === memberId) {
-      throw new ForbiddenException('You cannot change your own roles or suspend your own account')
+      throw new ForbiddenException(
+        'You cannot change your own roles or suspend your own account',
+      )
     }
     if (dto.roleIds === undefined && dto.status === undefined) {
       throw new BadRequestException('No team member changes were supplied')
@@ -201,16 +211,22 @@ export class TeamService {
       include: { roles: { include: { role: true } }, affiliate: true },
     })
     if (!member) throw new NotFoundException('Team member not found')
-    if (member.isSuperAdmin) throw new ForbiddenException('Platform administrators cannot be changed here')
+    if (member.isSuperAdmin)
+      throw new ForbiddenException('Platform administrators cannot be changed here')
 
     let roles: Array<{ id: string; name: string }> | null = null
     if (dto.roleIds !== undefined) {
-      if (dto.roleIds.length === 0) throw new BadRequestException('At least one role is required')
+      if (dto.roleIds.length === 0)
+        throw new BadRequestException('At least one role is required')
       roles = await this.prisma.role.findMany({
-        where: { id: { in: dto.roleIds }, OR: [{ organizationId }, { organizationId: null }] },
+        where: {
+          id: { in: dto.roleIds },
+          OR: [{ organizationId }, { organizationId: null }],
+        },
         select: { id: true, name: true },
       })
-      if (roles.length !== dto.roleIds.length) throw new BadRequestException('One or more roles are invalid')
+      if (roles.length !== dto.roleIds.length)
+        throw new BadRequestException('One or more roles are invalid')
     }
 
     if (dto.status === 'active' && member.status === 'suspended') {
@@ -240,8 +256,15 @@ export class TeamService {
       action: dto.status === 'suspended' ? 'team.member.suspended' : 'team.member.updated',
       resourceType: 'User',
       resourceId: memberId,
-      oldValue: { status: member.status, roleIds: member.roles.map((item) => item.roleId) },
-      newValue: { status: dto.status ?? member.status, roleIds: roles?.map((item) => item.id) ?? member.roles.map((item) => item.roleId) },
+      oldValue: {
+        status: member.status,
+        roleIds: member.roles.map((item) => item.roleId),
+      },
+      newValue: {
+        status: dto.status ?? member.status,
+        roleIds:
+          roles?.map((item) => item.id) ?? member.roles.map((item) => item.roleId),
+      },
       ipAddress,
     })
     return this.memberById(organizationId, memberId)
@@ -272,7 +295,8 @@ export class TeamService {
         },
         select: { id: true },
       })
-      if (remaining === 0 && placeholder) await tx.user.delete({ where: { id: placeholder.id } })
+      if (remaining === 0 && placeholder)
+        await tx.user.delete({ where: { id: placeholder.id } })
     })
     await this.audit.log({
       organizationId,
@@ -297,7 +321,13 @@ export class TeamService {
         isSuperAdmin: true,
         lastLoginAt: true,
         createdAt: true,
-        roles: { select: { role: { select: { id: true, name: true, isSystem: true, organizationId: true } } } },
+        roles: {
+          select: {
+            role: {
+              select: { id: true, name: true, isSystem: true, organizationId: true },
+            },
+          },
+        },
       },
     })
   }
@@ -308,11 +338,16 @@ export class TeamService {
       include: { permissions: { include: { permission: true } } },
     })
     if (!role) throw new NotFoundException('Role not found')
-    if (role.isSystem) throw new ForbiddenException('System roles cannot be edited or deleted')
+    if (role.isSystem)
+      throw new ForbiddenException('System roles cannot be edited or deleted')
     return role
   }
 
-  private async assertRoleNameAvailable(organizationId: string, name: string, excludeId?: string) {
+  private async assertRoleNameAvailable(
+    organizationId: string,
+    name: string,
+    excludeId?: string,
+  ) {
     const existing = await this.prisma.role.findFirst({
       where: {
         organizationId,
@@ -326,8 +361,11 @@ export class TeamService {
 
   private async resolvePermissions(keys: string[]) {
     const unique = [...new Set(keys.map((key) => key.trim()).filter(Boolean))]
-    const permissions = await this.prisma.permission.findMany({ where: { key: { in: unique } } })
-    if (permissions.length !== unique.length) throw new BadRequestException('One or more permissions are invalid')
+    const permissions = await this.prisma.permission.findMany({
+      where: { key: { in: unique } },
+    })
+    if (permissions.length !== unique.length)
+      throw new BadRequestException('One or more permissions are invalid')
     return permissions
   }
 }
