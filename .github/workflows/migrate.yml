@@ -1,0 +1,55 @@
+name: Prisma Migrate (Deploy)
+
+# Run manually from the Actions tab, or auto-run on merge to main.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "yes" to run migrations against the production database'
+        required: true
+        default: 'no'
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/prisma/migrations/**'
+      - 'backend/prisma/schema.prisma'
+
+jobs:
+  migrate:
+    name: prisma migrate deploy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Abort if not confirmed (manual trigger only)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.confirm != 'yes'
+        run: |
+          echo "❌ You must type 'yes' in the confirm field to run migrations."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Run migrations
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Migration complete
+        run: echo "✅ All pending migrations applied successfully."
