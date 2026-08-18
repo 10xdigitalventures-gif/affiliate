@@ -6,4 +6,3 @@ pages_build_output_dir = ".vercel/output/static"
 [vars]
 NEXT_PUBLIC_API_URL = "https://apiaffiliate.10xcollab.com/v1"
 NODE_VERSION = "20"
-NPM_FLAGS = "--legacy-peer-deps"
