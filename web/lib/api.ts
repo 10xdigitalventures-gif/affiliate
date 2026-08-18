@@ -53,6 +53,13 @@ export type AuthUser = {
 }
 export type AuthTokens = { access_token: string; refresh_token: string; user: AuthUser }
 
+export type MeResult = AuthUser & {
+  status: string
+  emailVerifiedAt: string | null
+  twoFactorEnabled: boolean
+  isSuperAdmin: boolean
+}
+
 export const Auth = {
   async login(email: string, password: string) {
     const res = await api<AuthTokens>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })
@@ -75,7 +82,9 @@ export const Auth = {
     }
   },
   logoutAll: () => api('/auth/logout-all', { method: 'POST' }),
-  me: () => api<AuthUser & { status: string; emailVerifiedAt: string | null; twoFactorEnabled: boolean; isSuperAdmin: boolean }>('/auth/me'),
+  me: () => api<MeResult>('/auth/me'),
+  updateProfile: (dto: { fullName?: string; email?: string; currentPassword?: string }) =>
+    api<MeResult>('/auth/profile', { method: 'PATCH', body: JSON.stringify(dto) }),
   changePassword: (currentPassword: string, newPassword: string) =>
     api<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
   forgotPassword: (email: string, workspace?: string) =>
