@@ -20,6 +20,9 @@ jobs:
       run:
         working-directory: marketing
 
+    env:
+      NEXT_PUBLIC_API_URL: https://apiaffiliate.10xcollab.com/v1
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,7 +38,7 @@ jobs:
         run: npm ci
 
       - name: Install @cloudflare/next-on-pages
-        run: npm install -D @cloudflare/next-on-pages
+        run: npm install -D @cloudflare/next-on-pages vercel
 
       - name: Build for Cloudflare Pages
         run: npx @cloudflare/next-on-pages

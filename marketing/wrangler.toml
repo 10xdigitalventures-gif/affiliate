@@ -1,0 +1,7 @@
+name = "affiliate-marketing"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = ".vercel/output/static"
+
+[vars]
+NEXT_PUBLIC_API_URL = "https://apiaffiliate.10xcollab.com/v1"

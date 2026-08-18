@@ -21,7 +21,8 @@ jobs:
         working-directory: web
 
     env:
-      NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+      NEXT_PUBLIC_API_URL: https://apiaffiliate.10xcollab.com/v1
+      API_PROXY_URL: https://apiaffiliate.10xcollab.com
 
     steps:
       - name: Checkout
@@ -38,7 +39,7 @@ jobs:
         run: npm ci
 
       - name: Install @cloudflare/next-on-pages
-        run: npm install -D @cloudflare/next-on-pages
+        run: npm install -D @cloudflare/next-on-pages vercel
 
       - name: Build for Cloudflare Pages
         run: npx @cloudflare/next-on-pages
