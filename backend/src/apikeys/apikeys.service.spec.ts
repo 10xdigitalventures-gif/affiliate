@@ -3,6 +3,7 @@ import { NotFoundException, UnauthorizedException } from '@nestjs/common'
 import { createHash } from 'crypto'
 import { ApiKeysService } from './apikeys.service'
 import { PrismaService } from '../prisma/prisma.service'
+import { EntitlementsService } from '../entitlements/entitlements.service'
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 
@@ -20,8 +21,16 @@ describe('ApiKeysService', () => {
         update: jest.fn().mockResolvedValue({}),
       },
     }
+    const entitlements = {
+      assertFeature: jest.fn().mockResolvedValue(undefined),
+      assertWithinLimit: jest.fn().mockResolvedValue(undefined),
+    }
     const moduleRef = await Test.createTestingModule({
-      providers: [ApiKeysService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        ApiKeysService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: EntitlementsService, useValue: entitlements },
+      ],
     }).compile()
     service = moduleRef.get(ApiKeysService)
   })

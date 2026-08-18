@@ -78,8 +78,8 @@ export const Auth = {
   me: () => api<AuthUser & { status: string; emailVerifiedAt: string | null; twoFactorEnabled: boolean; isSuperAdmin: boolean }>('/auth/me'),
   changePassword: (currentPassword: string, newPassword: string) =>
     api<{ ok: boolean }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
-  forgotPassword: (email: string) =>
-    api<{ ok: boolean }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
+  forgotPassword: (email: string, workspace?: string) =>
+    api<{ ok: boolean }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email, ...(workspace ? { workspace } : {}) }) }),
   resetPassword: (token: string, password: string) =>
     api<{ ok: boolean }>('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, password }) }),
   invite: (payload: { email: string; fullName?: string; roleId?: string }) =>
@@ -253,7 +253,7 @@ export const Stores = {
     api<{ url: string; configured: boolean }>(`/shopify/install-url${qs({ shop })}`),
 }
 
-// ---- Catalog (products + categories) ----
+// ---- Catalog ----
 export type CategoryRow = { id: string; name: string; externalId: string | null }
 export type ProductRow = {
   id: string
@@ -489,14 +489,6 @@ export type CategoryBreakdown = {
   revenue: number
   commissionAmount: number
 }
-export type SourceBreakdown = {
-  channel: string
-  adNetwork: string | null
-  source: string | null
-  orders: number
-  revenue: number
-  attributedOrders: number
-}
 
 function reportQs(range: ReportRange = {}, extra: Record<string, string | number | undefined> = {}) {
   const p = new URLSearchParams()
@@ -508,6 +500,15 @@ function reportQs(range: ReportRange = {}, extra: Record<string, string | number
   }
   const q = p.toString()
   return q ? `?${q}` : ''
+}
+
+export type SourceBreakdown = {
+  channel: string
+  adNetwork: string | null
+  source: string | null
+  orders: number
+  revenue: number
+  attributedOrders: number
 }
 
 export const Reports = {
@@ -566,12 +567,13 @@ export type PortalLink = {
   clicksCount: number
   createdAt: string
 }
+
 export type PortalCoupon = {
   id: string
   code: string
-  status: 'active' | 'expired' | 'disabled'
+  status: string
   expiresAt: string | null
-  store: { id: string; name: string; platform: string }
+  store: { name: string }
   _count: { orders: number }
 }
 
@@ -590,7 +592,7 @@ export const Portal = {
   submitTax: (dto: TaxFormInput) => api<TaxStatus>('/portal/tax', { method: 'POST', body: JSON.stringify(dto) }),
 }
 
-// ---- Tax (1099 / W-9 / W-8BEN) ----
+// ---- Tax ----
 export type TaxFormType = 'w9' | 'w8ben'
 export type TaxFormStatus = 'not_submitted' | 'submitted' | 'verified' | 'rejected'
 export type TaxStatus = {
@@ -820,7 +822,7 @@ export const Payouts = {
   fail: (id: string) => api(`/payouts/${id}/fail`, { method: 'PATCH' }),
 }
 
-// ---- Fraud scoring + review queue ----
+// ---- Fraud ----
 export type FraudSettings = {
   reviewThreshold: number
   blockThreshold: number
@@ -875,7 +877,7 @@ export const AttributionSettings = {
     api<AttributionSettingsData>('/settings/attribution', { method: 'PATCH', body: JSON.stringify(dto) }),
 }
 
-// ---- Plans, entitlements & super-admin ----
+// ---- Plans & Entitlements ----
 export type Plan = {
   id: string
   key: string
@@ -929,7 +931,7 @@ export type PlatformOverview = {
   planDistribution: Array<{ key: string; name: string; subscribers: number }>
 }
 
-// ---- Branding (white-label) ----
+// ---- Branding ----
 export type BrandingData = {
   companyName: string | null
   logoUrl: string | null

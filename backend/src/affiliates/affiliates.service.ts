@@ -14,6 +14,14 @@ export class AffiliatesService {
     return Math.random().toString(36).slice(2, 8).toUpperCase()
   }
 
+  /** Normalize identifiers: code → UPPER_TRIMMED, slug → lower_trimmed. */
+  private normalizeDto(dto: CreateAffiliateDto) {
+    return {
+      affiliateCode: dto.affiliateCode != null ? dto.affiliateCode.trim().toUpperCase() : undefined,
+      referralSlug: dto.referralSlug != null ? dto.referralSlug.trim().toLowerCase() : undefined,
+    }
+  }
+
   async list(organizationId: string, params: { status?: string; skip?: number; take?: number }) {
     const where = { organizationId, ...(params.status ? { status: params.status as any } : {}) }
     const [items, total] = await this.prisma.$transaction([
@@ -36,15 +44,28 @@ export class AffiliatesService {
 
   async create(organizationId: string, dto: CreateAffiliateDto) {
     await this.entitlements.assertWithinLimit(organizationId, 'affiliates')
-    const code = dto.affiliateCode || this.randomCode()
-    return this.prisma.affiliate.create({
-      data: {
-        organizationId,
-        affiliateCode: code,
-        referralSlug: dto.referralSlug || code.toLowerCase(),
-        status: 'pending',
-      },
-    })
+    const norm = this.normalizeDto(dto)
+    const code = norm.affiliateCode || this.randomCode()
+    const slug = norm.referralSlug || code.toLowerCase()
+
+    // Retry once on unique-code collision (P2002) so auto-generated codes can
+    // self-heal without surfacing a DB error to callers.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const codeToUse = attempt === 0 ? code : this.randomCode()
+      try {
+        return await this.prisma.affiliate.create({
+          data: {
+            organizationId,
+            affiliateCode: codeToUse,
+            referralSlug: attempt === 0 ? slug : codeToUse.toLowerCase(),
+            status: 'pending',
+          },
+        })
+      } catch (err: any) {
+        if (err?.code === 'P2002' && attempt === 0) continue
+        throw err
+      }
+    }
   }
 
   async approve(organizationId: string, id: string) {
@@ -61,15 +82,17 @@ export class AffiliatesService {
     if (parentAffiliateId) {
       if (parentAffiliateId === id) throw new BadRequestException('An affiliate cannot be its own parent')
       await this.get(organizationId, parentAffiliateId) // must exist in org
-      // Walk the prospective parent's upline; if we hit `id`, it's a cycle.
+      // Walk the prospective parent's upline within the tenant; if we hit `id`,
+      // it's a cycle. Using findFirst with organizationId ensures we never
+      // traverse nodes belonging to a different tenant.
       let cursor: string | null = parentAffiliateId
       const seen = new Set<string>()
       while (cursor) {
         if (cursor === id) throw new BadRequestException('That parent would create a cycle in the upline')
         if (seen.has(cursor)) break
         seen.add(cursor)
-        const node: { parentAffiliateId: string | null } | null = await this.prisma.affiliate.findUnique({
-          where: { id: cursor },
+        const node: { parentAffiliateId: string | null } | null = await this.prisma.affiliate.findFirst({
+          where: { id: cursor, organizationId },
           select: { parentAffiliateId: true },
         })
         cursor = node?.parentAffiliateId ?? null

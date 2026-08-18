@@ -20,6 +20,9 @@ function makeService() {
       findMany: jest.fn(),
       count: jest.fn(),
     },
+    click: {
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
     $transaction: jest.fn(async (ops: any[]) => Promise.all(ops)),
   }
   const attribution: any = { resolve: jest.fn() }

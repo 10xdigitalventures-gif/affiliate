@@ -7,8 +7,9 @@ import { ManualPayoutProvider } from './manual.provider'
 
 /**
  * Dispatches a payout to the right provider based on the PayoutMethod.
- * Rails without an automated integration (bank / paypal / crypto / manual)
- * fall back to the manual provider.
+ * Only Stripe and Wise have automated integrations.
+ * All other rails (bank, paypal, crypto, manual, unknown) fall back to the
+ * manual provider, which records the intent without moving money automatically.
  */
 @Injectable()
 export class PayoutProviderService {
@@ -24,11 +25,11 @@ export class PayoutProviderService {
     this.registry = {
       stripe: this.stripe,
       wise: this.wise,
-      paypal: this.paypal,
-      manual: this.manual,
-      // Non-automated rails route through the manual provider.
+      // Non-automated rails: all route through manual.
       bank: this.manual,
+      paypal: this.manual,
       crypto: this.manual,
+      manual: this.manual,
     }
   }
 
