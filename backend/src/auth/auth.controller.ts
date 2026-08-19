@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Param, Post, Query, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common'
 import type { Response } from 'express'
 import { Throttle } from '@nestjs/throttler'
 import { AuthService } from './auth.service'
@@ -19,6 +19,12 @@ import {
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard'
 import { PermissionsGuard, RequirePermissions } from '../common/guards/permissions.guard'
 import { JwtPayload } from './jwt.strategy'
+import {
+  clearSessionCookies,
+  readCookie,
+  REFRESH_COOKIE,
+  setSessionCookies,
+} from './session-cookies'
 
 function clientCtx(req: any) {
   return {
@@ -30,6 +36,17 @@ function clientCtx(req: any) {
   }
 }
 
+/**
+ * Set HttpOnly session cookies when the service result contains both tokens.
+ * This is a no-op for non-token responses (2FA challenge, workspace selection).
+ */
+function attachTokenCookies(res: Response, result: unknown): void {
+  const r = result as Record<string, unknown>
+  if (typeof r?.access_token === 'string' && typeof r?.refresh_token === 'string') {
+    setSessionCookies(res, { access_token: r.access_token, refresh_token: r.refresh_token })
+  }
+}
+
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
@@ -37,35 +54,49 @@ export class AuthController {
   // Brute-force protection: max 5 login attempts per minute per IP.
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @Post('login')
-  login(@Body() dto: LoginDto, @Req() req: any) {
-    return this.auth.login(dto, clientCtx(req))
+  async login(@Body() dto: LoginDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
+    const result = await this.auth.login(dto, clientCtx(req))
+    attachTokenCookies(res, result)
+    return result
   }
 
   // Second step when one address unlocks accounts in several workspaces.
   // The challenge is only issued after the password has already been verified.
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('select-workspace')
-  selectWorkspace(@Body() dto: SelectWorkspaceDto, @Req() req: any) {
-    return this.auth.selectWorkspace(dto.challenge, dto.orgSlug, clientCtx(req))
+  async selectWorkspace(@Body() dto: SelectWorkspaceDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
+    const result = await this.auth.selectWorkspace(dto.challenge, dto.orgSlug, clientCtx(req))
+    attachTokenCookies(res, result)
+    return result
   }
 
   @Throttle({ default: { ttl: 60_000, limit: 30 } })
   @Post('refresh')
-  refresh(@Body() dto: RefreshDto, @Req() req: any) {
-    return this.auth.refresh(dto.refresh_token, clientCtx(req))
+  async refresh(@Body() dto: RefreshDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
+    // Prefer the HttpOnly cookie; fall back to the request body so existing
+    // clients keep working while they migrate to cookie-based auth.
+    const token = readCookie(req, REFRESH_COOKIE) ?? dto.refresh_token
+    if (!token) throw new UnauthorizedException('Refresh token is required')
+    const result = await this.auth.refresh(token, clientCtx(req))
+    attachTokenCookies(res, result)
+    return result
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('logout')
-  logout(@Body() dto: LogoutDto, @Req() req: any) {
+  async logout(@Body() dto: LogoutDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
     const user = req.user as JwtPayload
-    return this.auth.logout(dto.refresh_token, user.sub)
+    // Read the refresh token from the cookie first; body param is legacy.
+    const tokenFromCookie = readCookie(req, REFRESH_COOKIE)
+    clearSessionCookies(res)
+    return this.auth.logout(tokenFromCookie ?? dto.refresh_token, user.sub)
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('logout-all')
-  logoutAll(@Req() req: any) {
+  async logoutAll(@Req() req: any, @Res({ passthrough: true }) res: Response) {
     const user = req.user as JwtPayload
+    clearSessionCookies(res)
     return this.auth.logout(undefined, user.sub, true)
   }
 
@@ -106,8 +137,10 @@ export class AuthController {
   // Accept an invitation and set a password (public — token is the credential).
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('accept-invite')
-  acceptInvite(@Body() dto: AcceptInviteDto, @Req() req: any) {
-    return this.auth.acceptInvite(dto, clientCtx(req))
+  async acceptInvite(@Body() dto: AcceptInviteDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
+    const result = await this.auth.acceptInvite(dto, clientCtx(req))
+    attachTokenCookies(res, result)
+    return result
   }
 
   // ── Two-factor authentication ────────────────────────────────────────────
@@ -132,8 +165,10 @@ export class AuthController {
   // Exchange a login 2FA challenge for real tokens (public — challenge is the credential).
   @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('2fa/verify')
-  twoFactorVerify(@Body() dto: TwoFactorVerifyDto, @Req() req: any) {
-    return this.auth.verifyTwoFactor(dto.challenge, dto.code, clientCtx(req))
+  async twoFactorVerify(@Body() dto: TwoFactorVerifyDto, @Req() req: any, @Res({ passthrough: true }) res: Response) {
+    const result = await this.auth.verifyTwoFactor(dto.challenge, dto.code, clientCtx(req))
+    attachTokenCookies(res, result)
+    return result
   }
 
   // ── SSO (OIDC) ───────────────────────────────────────────────────────────
@@ -143,7 +178,9 @@ export class AuthController {
     return this.auth.ssoAuthorizeUrl(slug, redirectUri)
   }
 
-  // IdP redirects the browser back here; we mint tokens then bounce to the app.
+  // IdP redirects the browser back here. Tokens are placed in HttpOnly cookies;
+  // the URL fragment no longer carries any credential, closing the leakage
+  // vectors (browser history, referrer header, server access logs).
   @Get('sso/callback')
   async ssoCallback(
     @Query('code') code: string,
@@ -153,11 +190,10 @@ export class AuthController {
   ) {
     try {
       const { tokens, redirectUri } = await this.auth.ssoCallback(code, state, clientCtx(req))
-      const frag = new URLSearchParams({
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-      }).toString()
-      return res.redirect(`${redirectUri.replace(/\/$/, '')}/login/sso-callback#${frag}`)
+      setSessionCookies(res, tokens)
+      // Redirect without any token in the URL. The frontend reads user info
+      // via GET /auth/me once it detects the sso-callback route.
+      return res.redirect(`${redirectUri.replace(/\/$/, '')}/login/sso-callback`)
     } catch (err) {
       const base = process.env.APP_URL || 'http://localhost:3000'
       const msg = encodeURIComponent((err as Error).message || 'SSO sign-in failed')

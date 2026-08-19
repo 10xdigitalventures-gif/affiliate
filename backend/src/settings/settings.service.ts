@@ -8,6 +8,7 @@ import { CommissionChannelSettingsDto } from './dto/commission-channel-settings.
 import { CustomerTypeSettingsDto } from './dto/customer-type-settings.dto'
 import { SsoSettingsDto } from './dto/sso-settings.dto'
 import { AttributionService, AttributionSettings } from '../attribution/attribution.service'
+import { CryptoService } from '../common/crypto/crypto.service'
 
 export interface NotificationSettings {
   inAppEnabled: boolean
@@ -111,6 +112,7 @@ export class SettingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly attribution: AttributionService,
+    private readonly crypto: CryptoService,
   ) {}
 
   private async getOrg(organizationId: string) {
@@ -302,16 +304,19 @@ export class SettingsService {
   }
 
   // SSO config. The client secret is write-only: we return whether one is set,
-  // never the value itself.
+  // never the value itself. On write, the secret is AES-256-GCM encrypted
+  // (prefix 'enc:') so it is never persisted in plaintext.
   async getSsoSettings(organizationId: string) {
     const org = await this.getOrg(organizationId)
     const s = ((org.settings ?? {}) as Record<string, unknown>).sso as Record<string, unknown> | undefined
     const str = (v: unknown) => (typeof v === 'string' ? v : '')
+    const rawSecret = str(s?.clientSecret)
     return {
       enabled: s?.enabled === true,
       provider: str(s?.provider) || 'oidc',
       clientId: str(s?.clientId),
-      hasClientSecret: typeof s?.clientSecret === 'string' && s.clientSecret.length > 0,
+      // Never expose the secret; only tell the client whether one is configured.
+      hasClientSecret: rawSecret.length > 0,
       authorizationUrl: str(s?.authorizationUrl),
       tokenUrl: str(s?.tokenUrl),
       userinfoUrl: str(s?.userinfoUrl),
@@ -336,8 +341,12 @@ export class SettingsService {
       enabled: dto.enabled,
       ...(dto.provider !== undefined ? { provider: dto.provider } : {}),
       ...(dto.clientId !== undefined ? { clientId: dto.clientId } : {}),
-      // Only overwrite the secret when a non-empty value is provided.
-      ...(dto.clientSecret ? { clientSecret: dto.clientSecret } : {}),
+      // Encrypt the secret with AES-256-GCM before persistence. The 'enc:'
+      // prefix lets auth.service.ts distinguish encrypted from legacy plaintext
+      // values and decrypt transparently at use time.
+      ...(dto.clientSecret
+        ? { clientSecret: 'enc:' + this.crypto.encrypt(dto.clientSecret).toString('base64') }
+        : {}),
       ...(dto.authorizationUrl !== undefined ? { authorizationUrl: dto.authorizationUrl } : {}),
       ...(dto.tokenUrl !== undefined ? { tokenUrl: dto.tokenUrl } : {}),
       ...(dto.userinfoUrl !== undefined ? { userinfoUrl: dto.userinfoUrl } : {}),

@@ -22,6 +22,7 @@ import {
 import { generateSecret, verifyToken, otpauthUrl, generateRecoveryCodes } from './totp'
 import { TenantResolverService } from '../common/tenant/tenant-resolver.service'
 import { runUnscoped } from '../prisma/tenant-context'
+import { CryptoService } from '../common/crypto/crypto.service'
 
 type ClientCtx = { userAgent?: string; ipAddress?: string; hostname?: string }
 
@@ -55,6 +56,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly mail: MailService,
     private readonly tenants: TenantResolverService,
+    private readonly crypto: CryptoService,
   ) {}
 
   // ── Core credential + payload helpers ────────────────────────────────────
@@ -348,6 +350,25 @@ export class AuthService {
   }
 
   // ── Single sign-on (OIDC / OAuth2 authorization-code) ─────────────────────
+
+  /**
+   * Decrypt an SSO clientSecret that was persisted with the CryptoService.
+   *
+   * Encrypted values are stored as `enc:<base64>`. Plain-text values (written
+   * before encryption was introduced) are returned as-is so existing tenants
+   * continue to work until they re-save their SSO config through the settings
+   * API, at which point the secret is transparently re-encrypted.
+   */
+  private decryptSsoSecret(raw: string): string {
+    if (!raw.startsWith('enc:')) return raw // legacy plaintext fallback
+    try {
+      const buf = Buffer.from(raw.slice(4), 'base64')
+      return this.crypto.decrypt(buf)
+    } catch {
+      return '' // treat corrupt ciphertext as a missing secret
+    }
+  }
+
   private ssoConfigFrom(settings: unknown) {
     const s = (((settings ?? {}) as Record<string, unknown>).sso ?? {}) as Record<string, unknown>
     const str = (v: unknown) => (typeof v === 'string' ? v : '')
@@ -355,7 +376,7 @@ export class AuthService {
       enabled: s.enabled === true,
       provider: str(s.provider) || 'oidc',
       clientId: str(s.clientId),
-      clientSecret: str(s.clientSecret),
+      clientSecret: this.decryptSsoSecret(str(s.clientSecret)),
       authorizationUrl: str(s.authorizationUrl),
       tokenUrl: str(s.tokenUrl),
       userinfoUrl: str(s.userinfoUrl),
