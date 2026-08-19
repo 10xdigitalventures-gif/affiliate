@@ -1,0 +1,29 @@
+{
+  "auth": {
+    "login": "Sign in",
+    "logout": "Sign out",
+    "email": "Email address",
+    "password": "Password",
+    "forgotPassword": "Forgot password?",
+    "resetPassword": "Reset password",
+    "twoFactor": "Two-factor authentication",
+    "enterCode": "Enter the 6-digit code from your authenticator app"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "affiliates": "Affiliates",
+    "commissions": "Commissions",
+    "payouts": "Payouts",
+    "reports": "Reports",
+    "settings": "Settings"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "loading": "Loading…",
+    "noResults": "No results found",
+    "error": "Something went wrong. Please try again."
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "auth": {
+    "login": "Se connecter",
+    "logout": "Se déconnecter",
+    "email": "Adresse e-mail",
+    "password": "Mot de passe",
+    "forgotPassword": "Mot de passe oublié ?",
+    "resetPassword": "Réinitialiser le mot de passe",
+    "twoFactor": "Authentification à deux facteurs",
+    "enterCode": "Entrez le code à 6 chiffres de votre application d'authentification"
+  },
+  "nav": {
+    "dashboard": "Tableau de bord",
+    "affiliates": "Affiliés",
+    "commissions": "Commissions",
+    "payouts": "Paiements",
+    "reports": "Rapports",
+    "settings": "Paramètres"
+  },
+  "common": {
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "loading": "Chargement…",
+    "noResults": "Aucun résultat trouvé",
+    "error": "Une erreur est survenue. Veuillez réessayer."
+  }
+}
