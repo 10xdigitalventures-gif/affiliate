@@ -6,20 +6,34 @@ import { AppModule } from './app.module'
 import { initSentry } from './observability/sentry'
 import { AllExceptionsFilter } from './observability/all-exceptions.filter'
 
+const REQUIRED_ENV = ['DATABASE_URL', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'ENCRYPTION_KEY']
+
+const INSECURE_PLACEHOLDERS: Record<string, string[]> = {
+  JWT_ACCESS_SECRET: ['change-me-to-a-long-random-secret', 'jwt-secret', 'secret'],
+  JWT_REFRESH_SECRET: ['change-me-to-another-long-random-secret', 'jwt-secret', 'secret'],
+  // 64 zero-hex chars — the documented example value in .env.example.
+  ENCRYPTION_KEY: ['0000000000000000000000000000000000000000000000000000000000000000'],
+}
+
 async function bootstrap() {
   // ── Production startup guard ─────────────────────────────────────────────
   // Refuse to boot in production with missing or obviously-insecure secrets.
   // This turns a "silently broken" deploy into a loud, unmissable failure.
-  const REQUIRED_ENV = ['DATABASE_URL', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'ENCRYPTION_KEY']
-  const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k])
-  if (missingEnv.length > 0 && process.env.NODE_ENV === 'production') {
-    console.error(`FATAL: missing required env vars: ${missingEnv.join(', ')}`)
-    console.error('Set these in your .env or deployment secrets before starting the server.')
-    process.exit(1)
-  }
-  if (process.env.JWT_ACCESS_SECRET === 'change-me-to-a-long-random-secret' && process.env.NODE_ENV === 'production') {
-    console.error('FATAL: JWT_ACCESS_SECRET is still set to the example placeholder.')
-    process.exit(1)
+  if (process.env.NODE_ENV === 'production') {
+    const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k])
+    if (missingEnv.length > 0) {
+      console.error(`FATAL: missing required env vars: ${missingEnv.join(', ')}`)
+      console.error('Set these in your .env or deployment secrets before starting the server.')
+      process.exit(1)
+    }
+    for (const [key, placeholders] of Object.entries(INSECURE_PLACEHOLDERS)) {
+      const val = process.env[key] ?? ''
+      if (placeholders.includes(val)) {
+        console.error(`FATAL: ${key} is still set to the insecure example placeholder.`)
+        console.error(`Generate a real value with: openssl rand -hex 32`)
+        process.exit(1)
+      }
+    }
   }
 
   // ── Sentry ───────────────────────────────────────────────────────────────
@@ -51,8 +65,7 @@ async function bootstrap() {
   app.setGlobalPrefix(prefix)
 
   // CORS: comma-separated allowlist via CORS_ORIGIN env var.
-  // Defaults to localhost:3000 for local dev. Never use '*' in production —
-  // set CORS_ORIGIN=https://yourdomain.com in your deployment config.
+  // Defaults to localhost:3000 for local dev. Never use '*' in production.
   const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000'
   app.enableCors({
     origin: corsOrigin === '*' ? true : corsOrigin.split(',').map((o) => o.trim()),
@@ -65,12 +78,15 @@ async function bootstrap() {
     new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
   )
 
-  // ─── OpenAPI / Swagger docs ──────────────────────────────────────────────────
+  // ── OpenAPI / Swagger ────────────────────────────────────────────────────
   // FAIL-CLOSED: Swagger is disabled by default in all environments.
   // Enable only by explicitly setting SWAGGER_ENABLED=true.
   // Never set SWAGGER_ENABLED=true in production deployments.
   const swaggerEnabled = process.env.SWAGGER_ENABLED === 'true'
-  Logger.log(`Swagger docs: ${swaggerEnabled ? 'ENABLED' : 'DISABLED'} (SWAGGER_ENABLED=${process.env.SWAGGER_ENABLED ?? 'unset'})`, 'Bootstrap')
+  Logger.log(
+    `Swagger docs: ${swaggerEnabled ? 'ENABLED' : 'DISABLED'} (SWAGGER_ENABLED=${process.env.SWAGGER_ENABLED ?? 'unset'})`,
+    'Bootstrap',
+  )
 
   if (swaggerEnabled) {
     const config = new DocumentBuilder()
@@ -100,7 +116,10 @@ async function bootstrap() {
       swaggerOptions: { persistAuthorization: true },
       customSiteTitle: 'Affiliate Platform API Docs',
     })
-    Logger.log(`Swagger docs at http://localhost:${process.env.API_PORT || 4000}/${prefix}/docs`, 'Bootstrap')
+    Logger.log(
+      `Swagger docs at http://localhost:${process.env.API_PORT || 4000}/${prefix}/docs`,
+      'Bootstrap',
+    )
   }
 
   const port = Number(process.env.API_PORT) || 4000

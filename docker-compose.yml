@@ -1,7 +1,7 @@
 version: '3.9'
 
 services:
-  # ─── PostgreSQL ────────────────────────────────────────────────────────────────
+  # ── PostgreSQL ────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: affiliate_postgres
@@ -19,12 +19,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
 
-  # ─── Redis ───────────────────────────────────────────────────────────────────
+  # ── Redis ─────────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: affiliate_redis
     restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
     ports:
       - '6379:6379'
     volumes:
@@ -34,8 +40,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
-  # ─── Backend (NestJS API) ────────────────────────────────────────────────────
+  # ── Backend (NestJS API) ──────────────────────────────────────────────────────
   backend:
     build:
       context: ./backend
@@ -51,6 +62,7 @@ services:
       - ./backend/.env
     environment:
       DATABASE_URL: postgresql://postgres:password@postgres:5432/affiliate_platform
+      REDIS_URL: redis://redis:6379
       REDIS_HOST: redis
       REDIS_PORT: '6379'
     ports:
@@ -58,8 +70,20 @@ services:
     volumes:
       - ./backend:/app
       - /app/node_modules
+    healthcheck:
+      # Hits the /v1/health endpoint provided by HealthModule.
+      test: ['CMD', 'curl', '-f', 'http://localhost:4000/v1/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
 
-  # ─── Frontend (Next.js) ──────────────────────────────────────────────────────
+  # ── Frontend (Next.js) ────────────────────────────────────────────────────────
   frontend:
     build:
       context: ./web
@@ -67,7 +91,8 @@ services:
     container_name: affiliate_frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:4000/v1
       NEXTAUTH_URL: http://localhost:3000
@@ -77,8 +102,19 @@ services:
       - ./web:/app
       - /app/node_modules
       - /app/.next
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
 
-  # ─── Mailtrap (optional local email testing) ─────────────────────────────────
+  # ── Mailtrap (optional local email testing) ───────────────────────────────────
   # Uncomment to enable local email catching
   # mailcatcher:
   #   image: schickling/mailcatcher
