@@ -44,35 +44,59 @@ import { EmailTemplatesModule } from './email-templates/email-templates.module'
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    // Global rate limiting. Defaults: 120 requests / 60s per IP.
-    // Override per-route with @Throttle(); skip with @SkipThrottle().
-    ThrottlerModule.forRoot([
-      {
-        ttl: Number(process.env.RATE_LIMIT_TTL_MS) || 60_000,
-        limit: Number(process.env.RATE_LIMIT_MAX) || 120,
+    // Global rate limiting.
+    // When REDIS_URL is set (staging / production), state is stored in Redis so
+    // every API replica shares the same counters. Falls back to in-memory
+    // storage for local dev where Redis is not required.
+    ThrottlerModule.forRootAsync({
+      useFactory: () => {
+        const throttlers = [
+          {
+            ttl: Number(process.env.RATE_LIMIT_TTL_MS) || 60_000,
+            limit: Number(process.env.RATE_LIMIT_MAX) || 120,
+          },
+        ]
+        if (process.env.REDIS_URL) {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { ThrottlerStorageRedisService } = require('throttler-storage-redis')
+          return {
+            throttlers,
+            storage: new ThrottlerStorageRedisService(process.env.REDIS_URL),
+          }
+        }
+        // No REDIS_URL: use the default in-memory store. This is fine for a
+        // single-process dev server but must not be used in production.
+        if (process.env.NODE_ENV === 'production') {
+          console.warn(
+            '[ThrottlerModule] REDIS_URL is not set in production. ' +
+              'Rate-limit counters are per-process and will not be shared across replicas. ' +
+              'Set REDIS_URL to a shared Redis instance.',
+          )
+        }
+        return { throttlers }
       },
-    ]),
+    }),
     PrismaModule,
     CryptoModule,
     AuthModule,
     AffiliatesModule,
-    // Phase 1 — core engine
+    // Phase 1 - core engine
     LinksModule,
     CouponsModule,
     TrackingModule,
     AttributionModule,
     CommissionsModule,
     OrdersModule,
-    // Phase 2 — integrations
+    // Phase 2 - integrations
     StoresModule,
     IntegrationsModule,
     WebhooksModule,
-    // Phase 3 — dashboards, analytics & affiliate portal
+    // Phase 3 - dashboards, analytics and affiliate portal
     ReportsModule,
     PortalModule,
-    // Phase 4 — payouts
+    // Phase 4 - payouts
     PayoutsModule,
-    // Phase 5 — fraud, audit, queue
+    // Phase 5 - fraud, audit, queue
     QueueModule,
     FraudModule,
     AuditModule,
@@ -89,26 +113,22 @@ import { EmailTemplatesModule } from './email-templates/email-templates.module'
     SuperAdminModule,
     BrandingModule,
     DomainsModule,
-    // Phase 31 — 1-click store connect (Shopify OAuth app)
+    // Phase 31 - 1-click store connect (Shopify OAuth app)
     ShopifyAppModule,
-    // Phase 33 — platform billing (Whop + Swich gateways)
+    // Phase 33 - platform billing (Whop + Swich gateways)
     BillingModule,
-    // Phase 34 — affiliate tax collection (W-9 / W-8BEN, 1099-NEC reporting)
+    // Phase 34 - affiliate tax collection (W-9 / W-8BEN, 1099-NEC reporting)
     TaxModule,
     // Phase 36 - per-tenant branded + editable email templates
     EmailTemplatesModule,
   ],
   providers: [
-    // Apply rate limiting globally to every route.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
-    // Publish the authenticated user's organization so the Prisma middleware
-    // can scope every query to it. Must run after the guards populate req.user.
     { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
   ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    // Tag every request with a traceable id (echoed as x-request-id).
     consumer.apply(RequestIdMiddleware).forRoutes('*')
   }
 }
