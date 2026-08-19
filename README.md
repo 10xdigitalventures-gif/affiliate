@@ -1,11 +1,11 @@
 # Unified Affiliate Management Platform
 
-![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)
-![Docker Build](https://github.com/OWNER/REPO/actions/workflows/docker.yml/badge.svg)
+![CI](https://github.com/10xdigitalventures-gif/affiliate/actions/workflows/ci.yml/badge.svg)
+![Docker Build](https://github.com/10xdigitalventures-gif/affiliate/actions/workflows/docker.yml/badge.svg)
 
 Multi-store affiliate & referral management platform for **Shopify + WooCommerce** (GoHighLevel later). Standalone multi-merchant SaaS.
 
-> CI/CD runs on GitHub Actions — see `CI.md`. Replace `OWNER/REPO` in the badges above with your repo path.
+> CI/CD runs on GitHub Actions — see `CI.md`.
 
 Built from the SRS (`Unified_Affiliate_Management_Platform_SRS`). This repo is delivered **phase by phase**.
 
@@ -59,5 +59,3 @@ cd ../web
 npm install
 npm run dev                        # web on :3000
 ```
-
-> Note: `npm install` requires network access. The sandbox this was generated in may have networking disabled, so install locally.
