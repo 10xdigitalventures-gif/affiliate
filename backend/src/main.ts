@@ -66,8 +66,13 @@ async function bootstrap() {
   )
 
   // ─── OpenAPI / Swagger docs ──────────────────────────────────────────────────
-  // Disable in production by setting SWAGGER_ENABLED=false.
-  if (process.env.SWAGGER_ENABLED !== 'false') {
+  // FAIL-CLOSED: Swagger is disabled by default in all environments.
+  // Enable only by explicitly setting SWAGGER_ENABLED=true.
+  // Never set SWAGGER_ENABLED=true in production deployments.
+  const swaggerEnabled = process.env.SWAGGER_ENABLED === 'true'
+  Logger.log(`Swagger docs: ${swaggerEnabled ? 'ENABLED' : 'DISABLED'} (SWAGGER_ENABLED=${process.env.SWAGGER_ENABLED ?? 'unset'})`, 'Bootstrap')
+
+  if (swaggerEnabled) {
     const config = new DocumentBuilder()
       .setTitle('Affiliate Platform API')
       .setDescription(
