@@ -4,7 +4,6 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core'
 import { RequestIdMiddleware } from './observability/request-id.middleware'
 import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor'
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler'
-import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis'
 import { PrismaModule } from './prisma/prisma.module'
 import { CryptoModule } from './common/crypto/crypto.module'
 import { AuthModule } from './auth/auth.module'
@@ -50,7 +49,7 @@ import { EmailTemplatesModule } from './email-templates/email-templates.module'
     // every API replica shares the same counters. Falls back to in-memory
     // storage for local dev where Redis is not required.
     ThrottlerModule.forRootAsync({
-      useFactory: () => {
+      useFactory: async () => {
         const throttlers = [
           {
             ttl: Number(process.env.RATE_LIMIT_TTL_MS) || 60_000,
@@ -58,13 +57,15 @@ import { EmailTemplatesModule } from './email-templates/email-templates.module'
           },
         ]
         if (process.env.REDIS_URL) {
+          // Dynamic import so the package is only loaded when Redis is used.
+          // This prevents startup errors in dev environments without Redis.
+          const { ThrottlerStorageRedisService } = await import('@nest-lab/throttler-storage-redis')
           return {
             throttlers,
             storage: new ThrottlerStorageRedisService(process.env.REDIS_URL),
           }
         }
-        // No REDIS_URL: use the default in-memory store. This is fine for a
-        // single-process dev server but must not be used in production.
+        // No REDIS_URL: use the default in-memory store. Fine for local dev.
         if (process.env.NODE_ENV === 'production') {
           console.warn(
             '[ThrottlerModule] REDIS_URL is not set in production. ' +
