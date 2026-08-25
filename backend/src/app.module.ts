@@ -4,6 +4,7 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core'
 import { RequestIdMiddleware } from './observability/request-id.middleware'
 import { TenantContextInterceptor } from './common/interceptors/tenant-context.interceptor'
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler'
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis'
 import { PrismaModule } from './prisma/prisma.module'
 import { CryptoModule } from './common/crypto/crypto.module'
 import { AuthModule } from './auth/auth.module'
@@ -57,8 +58,6 @@ import { EmailTemplatesModule } from './email-templates/email-templates.module'
           },
         ]
         if (process.env.REDIS_URL) {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const { ThrottlerStorageRedisService } = require('throttler-storage-redis')
           return {
             throttlers,
             storage: new ThrottlerStorageRedisService(process.env.REDIS_URL),
