@@ -1,22 +1,13 @@
 -- =====================================================================
--- Supabase RLS hardening  (safe to apply -- does NOT break Prisma)
+-- RLS hardening  (safe on plain PostgreSQL AND Supabase)
 -- =====================================================================
 -- WHY:
---   Supabase exposes the whole `public` schema through its auto-generated
---   Data API (PostgREST) to the `anon` and `authenticated` roles. Enabling
---   RLS with NO permissive policy = deny-by-default for those roles, so no
---   one can touch your data through the public API. This also clears the
---   "RLS disabled in public" security warnings in the Supabase dashboard.
---
--- DOES THIS BREAK THE BACKEND?  No.
---   Prisma connects as the `postgres` role, which OWNS these tables, and a
---   table owner BYPASSES RLS (we deliberately do NOT use FORCE ROW LEVEL
---   SECURITY here). `service_role` also has BYPASSRLS. So every NestJS /
---   Prisma query keeps working exactly as before.
---
--- For true per-row multi-tenant isolation (optional, only needed if you
---   expose the Data API or want RLS enforced against the backend too) see
---   RLS-tenant-isolation-OPTIONAL.sql shipped alongside this file.
+--   Supabase exposes the whole `public` schema through PostgREST to the
+--   `anon` and `authenticated` roles. Enabling RLS with no permissive
+--   policy = deny-by-default for those roles.
+--   On plain local PostgreSQL these roles do not exist, so the REVOKE
+--   statements are wrapped in a safe DO block that skips them when the
+--   role is absent.
 -- =====================================================================
 
 -- 1) Enable RLS on every table -------------------------------------------
@@ -66,12 +57,18 @@ ALTER TABLE "BillingCustomer" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "BillingInvoice" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "GatewayEvent" ENABLE ROW LEVEL SECURITY;
 
--- 2) Strip any direct grants the Data API roles may hold -----------------
-REVOKE ALL ON ALL TABLES    IN SCHEMA public FROM anon, authenticated;
-REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM anon, authenticated;
-REVOKE ALL ON ALL ROUTINES  IN SCHEMA public FROM anon, authenticated;
-
--- Future objects created in public are locked down too
-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES    FROM anon, authenticated;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM anon, authenticated;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON ROUTINES  FROM anon, authenticated;
+-- 2) Strip grants from Supabase Data-API roles (skipped on plain Postgres)
+-- These roles only exist on Supabase. The DO block suppresses the
+-- "role does not exist" error so the migration runs cleanly locally.
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON ALL TABLES    IN SCHEMA public FROM anon, authenticated;
+    REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM anon, authenticated;
+    REVOKE ALL ON ALL ROUTINES  IN SCHEMA public FROM anon, authenticated;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES    FROM anon, authenticated;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM anon, authenticated;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON ROUTINES  FROM anon, authenticated;
+  END IF;
+END
+$$;
