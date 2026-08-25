@@ -1,26 +1,6 @@
 -- =============================================================================
 -- FORCE ROW LEVEL SECURITY - tenant isolation at the database layer
--- =============================================================================
--- WHY:
---   The previous RLS migration enabled RLS but left FORCE RLS off, so the
---   Prisma user (postgres / table owner) still bypassed all policies. This
---   migration adds FORCE ROW LEVEL SECURITY on every tenant-scoped table so
---   even the connection role is bound by the policies.
---
--- HOW IT WORKS AT RUNTIME:
---   1. Before each tenant query, the application calls:
---        SET LOCAL app.current_org_id = '<uuid>';
---      (or SET SESSION for long-lived connections outside a transaction).
---   2. The current_org_id() function reads that variable and the policy
---      restricts the query to that one organization's rows.
---   3. Internal / superadmin paths call:
---        SET LOCAL app.bypass_rls = 'on';
---      which triggers the BYPASS policy instead.
---
--- PRODUCTION SETUP (run scripts/create-api-role.sql separately):
---   Create a low-privilege `affiliate_api` role and connect Prisma with it
---   so Prisma itself is subject to RLS. The postgres superuser role should
---   only be used for migrations.
+-- Safe on plain PostgreSQL (local dev) AND Supabase (production)
 -- =============================================================================
 
 -- Helper: read the current tenant from the session variable.
@@ -32,7 +12,8 @@ CREATE OR REPLACE FUNCTION public.current_org_id() RETURNS uuid
   $$;
 
 -- =============================================================================
--- Tables with a direct organizationId column
+-- Tables with a direct organizationId column (uuid)
+-- We cast "organizationId" to uuid explicitly to avoid text=uuid errors.
 -- =============================================================================
 DO $$ DECLARE t text;
 BEGIN
@@ -50,27 +31,25 @@ BEGIN
   ]
   LOOP
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
-
-    -- Drop old policies so this migration is re-runnable.
     EXECUTE format('DROP POLICY IF EXISTS tenant_rw ON %I', t);
     EXECUTE format('DROP POLICY IF EXISTS bypass    ON %I', t);
 
-    -- Bypass policy: internal/superadmin paths set app.bypass_rls=on.
+    -- Bypass policy for internal/superadmin paths
     EXECUTE format(
-      'CREATE POLICY bypass ON %I AS PERMISSIVE FOR ALL TO PUBLIC
-         USING (current_setting(''app.bypass_rls'', true) = ''on'')',
+      $p$CREATE POLICY bypass ON %I AS PERMISSIVE FOR ALL TO PUBLIC
+         USING (current_setting('app.bypass_rls', true) = 'on')$p$,
       t);
 
-    -- Tenant isolation policy: rows must belong to the current org.
+    -- Tenant isolation: cast organizationId to uuid for safe comparison
     EXECUTE format(
-      'CREATE POLICY tenant_rw ON %I AS PERMISSIVE FOR ALL TO PUBLIC
-         USING ("organizationId" = public.current_org_id())',
+      $p$CREATE POLICY tenant_rw ON %I AS PERMISSIVE FOR ALL TO PUBLIC
+         USING ("organizationId"::uuid = public.current_org_id())$p$,
       t);
   END LOOP;
 END $$;
 
 -- =============================================================================
--- Organization table (scoped on id, not organizationId)
+-- Organization table (scoped on id)
 -- =============================================================================
 ALTER TABLE "Organization" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS bypass    ON "Organization";
@@ -78,11 +57,10 @@ DROP POLICY IF EXISTS tenant_rw ON "Organization";
 CREATE POLICY bypass ON "Organization" AS PERMISSIVE FOR ALL TO PUBLIC
   USING (current_setting('app.bypass_rls', true) = 'on');
 CREATE POLICY tenant_rw ON "Organization" AS PERMISSIVE FOR ALL TO PUBLIC
-  USING (id = public.current_org_id());
+  USING (id::uuid = public.current_org_id());
 
 -- =============================================================================
--- Relation-scoped tables (no direct organizationId; scoped through a join)
--- These need individual policies because the org lives on a parent table.
+-- Relation-scoped tables
 -- =============================================================================
 
 -- Order: scoped through Store
@@ -94,8 +72,8 @@ CREATE POLICY bypass ON "Order" AS PERMISSIVE FOR ALL TO PUBLIC
 CREATE POLICY tenant_rw ON "Order" AS PERMISSIVE FOR ALL TO PUBLIC
   USING (EXISTS (
     SELECT 1 FROM "Store" s
-    WHERE s.id = "Order"."storeId"
-      AND s."organizationId" = public.current_org_id()
+    WHERE s.id::uuid = "Order"."storeId"::uuid
+      AND s."organizationId"::uuid = public.current_org_id()
   ));
 
 -- OrderItem: scoped through Order -> Store
@@ -106,9 +84,9 @@ CREATE POLICY bypass ON "OrderItem" AS PERMISSIVE FOR ALL TO PUBLIC
   USING (current_setting('app.bypass_rls', true) = 'on');
 CREATE POLICY tenant_rw ON "OrderItem" AS PERMISSIVE FOR ALL TO PUBLIC
   USING (EXISTS (
-    SELECT 1 FROM "Order" o JOIN "Store" s ON s.id = o."storeId"
-    WHERE o.id = "OrderItem"."orderId"
-      AND s."organizationId" = public.current_org_id()
+    SELECT 1 FROM "Order" o JOIN "Store" s ON s.id::uuid = o."storeId"::uuid
+    WHERE o.id::uuid = "OrderItem"."orderId"::uuid
+      AND s."organizationId"::uuid = public.current_org_id()
   ));
 
 -- Commission: scoped through Affiliate
@@ -120,26 +98,24 @@ CREATE POLICY bypass ON "Commission" AS PERMISSIVE FOR ALL TO PUBLIC
 CREATE POLICY tenant_rw ON "Commission" AS PERMISSIVE FOR ALL TO PUBLIC
   USING (EXISTS (
     SELECT 1 FROM "Affiliate" a
-    WHERE a.id = "Commission"."affiliateId"
-      AND a."organizationId" = public.current_org_id()
+    WHERE a.id::uuid = "Commission"."affiliateId"::uuid
+      AND a."organizationId"::uuid = public.current_org_id()
   ));
 
 -- =============================================================================
 -- Global / shared reference tables - no tenant restriction
 -- =============================================================================
-ALTER TABLE "Permission"    FORCE ROW LEVEL SECURITY;
+ALTER TABLE "Permission"     FORCE ROW LEVEL SECURITY;
 ALTER TABLE "RolePermission" FORCE ROW LEVEL SECURITY;
-ALTER TABLE "GatewayEvent"  FORCE ROW LEVEL SECURITY;
+ALTER TABLE "GatewayEvent"   FORCE ROW LEVEL SECURITY;
+ALTER TABLE "Plan"           FORCE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS allow_all ON "Permission";
 DROP POLICY IF EXISTS allow_all ON "RolePermission";
 DROP POLICY IF EXISTS allow_all ON "GatewayEvent";
-
-CREATE POLICY allow_all ON "Permission"    AS PERMISSIVE FOR ALL TO PUBLIC USING (true);
-CREATE POLICY allow_all ON "RolePermission" AS PERMISSIVE FOR ALL TO PUBLIC USING (true);
-CREATE POLICY allow_all ON "GatewayEvent"  AS PERMISSIVE FOR ALL TO PUBLIC USING (true);
-
--- Plan is global reference data (visible to all tenants for plan selection)
-ALTER TABLE "Plan" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS allow_all ON "Plan";
-CREATE POLICY allow_all ON "Plan" AS PERMISSIVE FOR ALL TO PUBLIC USING (true);
+
+CREATE POLICY allow_all ON "Permission"     AS PERMISSIVE FOR ALL TO PUBLIC USING (true);
+CREATE POLICY allow_all ON "RolePermission" AS PERMISSIVE FOR ALL TO PUBLIC USING (true);
+CREATE POLICY allow_all ON "GatewayEvent"   AS PERMISSIVE FOR ALL TO PUBLIC USING (true);
+CREATE POLICY allow_all ON "Plan"           AS PERMISSIVE FOR ALL TO PUBLIC USING (true);
