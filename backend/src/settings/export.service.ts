@@ -15,7 +15,8 @@ export class ExportService {
       this.prisma.affiliate.findMany({ where: { organizationId } }),
       this.prisma.commission.findMany({
         where: { affiliate: { organizationId } },
-        include: { affiliate: { select: { email: true } } },
+        // Affiliate has no email column — fetch via the linked User instead
+        include: { affiliate: { include: { user: { select: { email: true } } } } },
       }),
       this.prisma.payout.findMany({ where: { organizationId } }),
       this.prisma.apiKey.findMany({

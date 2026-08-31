@@ -196,6 +196,8 @@ model User {
   email          String
   passwordHash   String
   fullName       String?
+  phoneNumber    String?    // ← added for team management UI
+  avatarUrl      String?    // ← added for team management UI
   status         UserStatus @default(invited)
   emailVerifiedAt DateTime?
   twoFactorEnabled Boolean   @default(false)
@@ -611,9 +613,8 @@ model Commission {
   attributionType  String?
   status           CommissionStatus @default(pending)
   payoutItemId     String?          @unique
-  // Multi-tier / sub-affiliate override linkage
-  tier             Int              @default(0)   // 0 = direct sale, 1+ = override earned from a downline
-  sourceCommissionId String?                       // the direct commission this override was derived from
+  tier             Int              @default(0)
+  sourceCommissionId String?
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
@@ -738,13 +739,15 @@ model SyncJob {
 }
 
 model ApiKey {
-  id             String   @id @default(uuid())
+  id             String    @id @default(uuid())
   organizationId String
   name           String
   keyHash        String
+  prefix         String?   // ← first 8 chars of key shown in UI (non-secret)
   scopes         String[]
+  expiresAt      DateTime? // ← optional expiry
   lastUsedAt     DateTime?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
   organization   Organization @relation(fields: [organizationId], references: [id])
 }
 
@@ -772,7 +775,6 @@ model Setting {
   organization   Organization @relation(fields: [organizationId], references: [id])
   @@unique([organizationId, key])
 }
-
 
 model Plan {
   id            String       @id @default(uuid())
@@ -839,11 +841,6 @@ model Domain {
   @@index([organizationId])
 }
 
-
-// ------------------------------------------------------------------
-// Billing & Payment Gateways (platform billing: charging tenants/clients)
-// Whop = Stripe-like Merchant of Record. Swich = Pakistani gateway + payouts.
-// ------------------------------------------------------------------
 enum GatewayProvider {
   whop
   swich
@@ -867,22 +864,18 @@ enum BillingEventStatus {
   ignored
 }
 
-// Gateway credentials + tax config. scope=platform => owned by 10x Digital
-// Ventures; scope=tenant => a merchant billing their own customers (future).
 model PaymentGatewayConfig {
   id               String          @id @default(uuid())
   scope            GatewayScope    @default(platform)
-  organizationId   String?         // null when scope=platform
+  organizationId   String?
   provider         GatewayProvider
   label            String?
-  // Credentials. companyId = Whop biz_... / Swich company id. Secrets encrypted.
   companyId        String?
   apiKeyEnc        Bytes?
   webhookSecretEnc Bytes?
   isLive           Boolean         @default(false)
   isActive         Boolean         @default(true)
   isDefault        Boolean         @default(false)
-  // Tax passed on to the customer (client) on top of plan price.
   taxEnabled       Boolean         @default(false)
   taxPercent       Float           @default(0)
   taxLabel         String?         @default("Tax")
@@ -897,15 +890,14 @@ model PaymentGatewayConfig {
   @@index([organizationId])
 }
 
-// A paying client mapped to a gateway customer + their saved card on file.
 model BillingCustomer {
   id                     String          @id @default(uuid())
   organizationId         String
   configId               String
   provider               GatewayProvider
   providerCustomerId     String?
-  providerMemberId       String?         // Whop mber_...
-  defaultPaymentMethodId String?         // Whop payt_...
+  providerMemberId       String?
+  defaultPaymentMethodId String?
   cardBrand              String?
   cardLast4              String?
   cardExpMonth           Int?
@@ -921,7 +913,6 @@ model BillingCustomer {
   @@index([provider])
 }
 
-// Local mirror of invoices/receipts generated for and sent to clients.
 model BillingInvoice {
   id                String               @id @default(uuid())
   organizationId    String
@@ -953,7 +944,6 @@ model BillingInvoice {
   @@index([provider, status])
 }
 
-// Inbound webhook events (idempotency + audit) from Whop/Swich.
 model GatewayEvent {
   id          String             @id @default(uuid())
   provider    GatewayProvider
