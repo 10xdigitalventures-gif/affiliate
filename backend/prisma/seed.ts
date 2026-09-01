@@ -156,7 +156,16 @@ async function main() {
     const amount = Math.round(subtotal * 10) / 100 // 10%
     const status = statuses[i % statuses.length]
     await prisma.commission.create({
-      data: { orderId: order.id, affiliateId: affiliate.id, amount, currency: 'USD', status, createdAt: day, updatedAt: day },
+      data: {
+        orderId: order.id,
+        affiliateId: affiliate.id,
+        amount,
+        currency: 'USD',
+        status,
+        idempotencyKey: `seed-commission-${order.id}`,
+        createdAt: day,
+        updatedAt: day,
+      },
     })
     if (status !== 'pending') lifetime += amount
   }
