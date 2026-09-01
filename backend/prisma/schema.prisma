@@ -221,12 +221,13 @@ model User {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  roles        UserRole[]
-  affiliate    Affiliate?
-  auditLogs    AuditLog[]
+  organization        Organization         @relation(fields: [organizationId], references: [id])
+  roles               UserRole[]
+  affiliate           Affiliate?
+  auditLogs           AuditLog[]
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
+  loginExchangeCodes  LoginExchangeCode[]
 
   @@unique([organizationId, email])
   @@unique([organizationId, ssoProvider, ssoSubject])
@@ -327,13 +328,14 @@ model Store {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  organization Organization      @relation(fields: [organizationId], references: [id])
-  credentials  StoreCredential?
-  products     Product[]
-  coupons      Coupon[]
-  orders       Order[]
-  webhooks     WebhookEvent[]
-  syncJobs     SyncJob[]
+  organization   Organization      @relation(fields: [organizationId], references: [id])
+  credentials    StoreCredential?
+  products       Product[]
+  coupons        Coupon[]
+  orders         Order[]
+  webhooks       WebhookEvent[]
+  syncJobs       SyncJob[]
+  affiliateLinks AffiliateLink[]
 
   @@index([organizationId])
 }
@@ -403,18 +405,18 @@ model AffiliateApplication {
 }
 
 model AffiliateLink {
-  id           String   @id @default(uuid())
-  affiliateId  String
-  storeId      String?
-  campaignId   String?
+  id             String   @id @default(uuid())
+  affiliateId    String
+  storeId        String?
+  campaignId     String?
   destinationUrl String
-  shortCode    String   @unique
-  clicksCount  BigInt   @default(0)
-  createdAt    DateTime @default(now())
-  affiliate    Affiliate @relation(fields: [affiliateId], references: [id])
-  store        Store?    @relation(fields: [storeId], references: [id])
-  campaign     Campaign? @relation(fields: [campaignId], references: [id])
-  clicks       Click[]
+  shortCode      String   @unique
+  clicksCount    BigInt   @default(0)
+  createdAt      DateTime @default(now())
+  affiliate      Affiliate  @relation(fields: [affiliateId], references: [id])
+  store          Store?     @relation(fields: [storeId], references: [id])
+  campaign       Campaign?  @relation(fields: [campaignId], references: [id])
+  clicks         Click[]
   @@index([affiliateId])
 }
 
@@ -585,7 +587,7 @@ model Click {
   adNetwork       String?
   country         String?  @db.Char(2)
   occurredAt      DateTime @default(now())
-  affiliate       Affiliate     @relation(fields: [affiliateId], references: [id])
+  affiliate       Affiliate      @relation(fields: [affiliateId], references: [id])
   link            AffiliateLink? @relation(fields: [affiliateLinkId], references: [id])
   conversions     Conversion[]
   @@index([affiliateId, occurredAt])
@@ -642,13 +644,13 @@ model Commission {
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
-  order       Order            @relation(fields: [orderId], references: [id])
-  affiliate   Affiliate        @relation(fields: [affiliateId], references: [id])
-  rule        CommissionRule?  @relation(fields: [commissionRuleId], references: [id])
-  source      Commission?      @relation("CommissionOverrides", fields: [sourceCommissionId], references: [id])
-  overrides   Commission[]     @relation("CommissionOverrides")
-  adjustments CommissionAdjustment[]
-  payoutItem  PayoutItem?      @relation(fields: [payoutItemId], references: [id])
+  order         Order            @relation(fields: [orderId], references: [id])
+  affiliate     Affiliate        @relation(fields: [affiliateId], references: [id])
+  rule          CommissionRule?  @relation(fields: [commissionRuleId], references: [id])
+  source        Commission?      @relation("CommissionOverrides", fields: [sourceCommissionId], references: [id])
+  overrides     Commission[]     @relation("CommissionOverrides")
+  adjustments   CommissionAdjustment[]
+  payoutItem    PayoutItem?      @relation(fields: [payoutItemId], references: [id])
   ledgerEntries AffiliateLedgerEntry[]
   @@index([affiliateId, status])
   @@index([sourceCommissionId])
@@ -678,9 +680,9 @@ model Payout {
   transactionReference String?
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
-  organization Organization @relation(fields: [organizationId], references: [id])
-  affiliate    Affiliate    @relation(fields: [affiliateId], references: [id])
-  items        PayoutItem[]
+  organization  Organization          @relation(fields: [organizationId], references: [id])
+  affiliate     Affiliate             @relation(fields: [affiliateId], references: [id])
+  items         PayoutItem[]
   ledgerEntries AffiliateLedgerEntry[]
   @@index([organizationId, status])
 }
@@ -706,24 +708,24 @@ model PayoutMethodRecord {
 // Ledger & Balances (v6)
 // ------------------------------------------------------------------
 model AffiliateLedgerEntry {
-  id             String           @id @default(uuid())
+  id             String          @id @default(uuid())
   organizationId String
   affiliateId    String
   commissionId   String?
   payoutId       String?
   type           LedgerEntryType
-  balanceDelta   Decimal          @db.Decimal(14, 4)
-  lifetimeDelta  Decimal          @default(0) @db.Decimal(14, 4)
-  currency       String           @db.Char(3)
-  idempotencyKey String           @unique
+  balanceDelta   Decimal         @db.Decimal(14, 4)
+  lifetimeDelta  Decimal         @default(0) @db.Decimal(14, 4)
+  currency       String          @db.Char(3)
+  idempotencyKey String          @unique
   description    String?
   metadata       Json?
-  createdAt      DateTime         @default(now())
+  createdAt      DateTime        @default(now())
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  affiliate    Affiliate    @relation(fields: [affiliateId], references: [id])
-  commission   Commission?  @relation(fields: [commissionId], references: [id])
-  payout       Payout?      @relation(fields: [payoutId], references: [id])
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  affiliate    Affiliate      @relation(fields: [affiliateId], references: [id])
+  commission   Commission?    @relation(fields: [commissionId], references: [id])
+  payout       Payout?        @relation(fields: [payoutId], references: [id])
 
   @@index([organizationId, createdAt])
   @@index([affiliateId, currency, createdAt])
@@ -786,17 +788,17 @@ model Notification {
 }
 
 model WebhookEvent {
-  id                   String        @id @default(uuid())
-  storeId              String
-  platform             Platform
-  topic                String
-  idempotencyKey       String        @unique
-  payload              Json
-  status               WebhookStatus @default(received)
-  processingStartedAt  DateTime?
-  attempts             Int           @default(0)
-  createdAt            DateTime      @default(now())
-  store                Store         @relation(fields: [storeId], references: [id])
+  id                  String        @id @default(uuid())
+  storeId             String
+  platform            Platform
+  topic               String
+  idempotencyKey      String        @unique
+  payload             Json
+  status              WebhookStatus @default(received)
+  processingStartedAt DateTime?
+  attempts            Int           @default(0)
+  createdAt           DateTime      @default(now())
+  store               Store         @relation(fields: [storeId], references: [id])
   @@index([storeId, topic])
 }
 
@@ -835,7 +837,7 @@ model AuditLog {
   ipAddress      String?
   createdAt      DateTime @default(now())
   organization   Organization @relation(fields: [organizationId], references: [id])
-  user           User?    @relation(fields: [userId], references: [id])
+  user           User?        @relation(fields: [userId], references: [id])
   @@index([organizationId, createdAt])
 }
 
@@ -900,18 +902,18 @@ enum DomainPurpose {
 }
 
 model Domain {
-  id               String       @id @default(uuid())
-  organizationId   String
-  hostname         String       @unique
-  status           DomainStatus @default(pending)
-  purpose          DomainPurpose @default(login)
+  id                String        @id @default(uuid())
+  organizationId    String
+  hostname          String        @unique
+  status            DomainStatus  @default(pending)
+  purpose           DomainPurpose @default(login)
   verificationToken String
-  isPrimary        Boolean      @default(false)
-  lastCheckedAt    DateTime?
-  verifiedAt       DateTime?
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
-  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  isPrimary         Boolean       @default(false)
+  lastCheckedAt     DateTime?
+  verifiedAt        DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
 }
