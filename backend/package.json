@@ -13,6 +13,9 @@
     "lint": "eslint \"src/**/*.ts\" --fix",
     "test": "jest"
   },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
+  },
   "dependencies": {
     "@nest-lab/throttler-storage-redis": "^1.2.0",
     "@nestjs/common": "^10.3.0",
