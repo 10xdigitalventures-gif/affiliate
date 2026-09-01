@@ -2,10 +2,6 @@
 const nextConfig = {
   reactStrictMode: true,
 
-  // Disable font optimization — it fetches Google Fonts at build time which
-  // causes a silent hang on Windows / restricted networks.
-  optimizeFonts: false,
-
   // Proxy /api/v1/* to backend
   async rewrites() {
     const target = (process.env.API_PROXY_URL || 'https://apiaffiliate.10xcollab.com').replace(/\/$/, '')
