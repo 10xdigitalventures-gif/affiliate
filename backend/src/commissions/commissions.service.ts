@@ -310,6 +310,7 @@ export class CommissionsService {
           tier: 0,
           channel,
           attributionType,
+          idempotencyKey: `order:${order.id}:affiliate:${affiliateId}:tier:0`,
         },
       }),
       this.prisma.conversion.create({
@@ -402,6 +403,7 @@ export class CommissionsService {
           tier: 0,
           channel,
           attributionType,
+          idempotencyKey: `order:${order.id}:affiliate:${share.affiliateId}:tier:0:split`,
         },
       })
       await this.prisma.conversion.create({
@@ -492,6 +494,7 @@ export class CommissionsService {
               status: 'pending',
               tier,
               sourceCommissionId,
+              idempotencyKey: `order:${order.id}:affiliate:${parentId}:tier:${tier}:override:${sourceCommissionId}`,
             },
           })
         }
