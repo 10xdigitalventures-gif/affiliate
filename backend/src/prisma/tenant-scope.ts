@@ -30,16 +30,25 @@ export const TENANT_SCOPE_MAP: Record<string, ScopeStrategy> = {
   RolePermission: { kind: 'global' },
   // Raw provider webhook envelopes; the tenant is only known after parsing.
   GatewayEvent: { kind: 'global' },
+  // OAuth / SSO state tokens are short-lived and keyed by a random hash;
+  // they carry organizationId for lookup but are not tenant-queryable.
+  SsoLoginState: { kind: 'direct' },
+  ShopifyOAuthState: { kind: 'direct' },
 
   // No organizationId column - scoped through a relation.
   Order: { kind: 'relation', where: (o) => ({ store: { organizationId: o } }) },
   OrderItem: { kind: 'relation', where: (o) => ({ order: { store: { organizationId: o } } }) },
   Commission: { kind: 'relation', where: (o) => ({ affiliate: { organizationId: o } }) },
+  // User-scoped tokens (no organizationId; scoped via the user -> org relation).
+  LoginExchangeCode: { kind: 'relation', where: (o) => ({ user: { organizationId: o } }) },
+  ShopifyStaffIdentity: { kind: 'direct' },
 
   // Everything below carries its own organizationId column.
   Affiliate: { kind: 'direct' },
   AffiliateApplication: { kind: 'direct' },
   AffiliateLink: { kind: 'direct' },
+  AffiliateLedgerEntry: { kind: 'direct' },
+  AffiliateBalance: { kind: 'direct' },
   ApiKey: { kind: 'direct' },
   AuditLog: { kind: 'direct' },
   BillingCustomer: { kind: 'direct' },
@@ -145,7 +154,8 @@ export function assertTenantMapComplete(modelNames: string[]): void {
 }
 
 /**
- * Prisma client extension that narrows every query to the active organization.
+ * `warn` logs unscoped access without changing behaviour, so the remaining call
+ * sites can be found from real traffic before `enforce` starts throwing.
  *
  * Limitations worth knowing:
  * - `$queryRaw` / `$executeRaw` bypass this entirely. Raw SQL must filter by
